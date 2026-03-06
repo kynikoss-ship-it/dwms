@@ -4,19 +4,19 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
 
-// --- Firebase 초기화 ---
+// --- Firebase Initialization ---
 let app, auth, db, appId;
 let isCanvasEnvironment = false;
 
 try {
   let firebaseConfig;
   if (typeof __firebase_config !== 'undefined') {
-    // Canvas(미리보기) 환경
+    // Canvas Environment
     firebaseConfig = JSON.parse(__firebase_config);
     appId = typeof __app_id !== 'undefined' ? __app_id : 'school-reservation-system';
     isCanvasEnvironment = true;
   } else {
-    // 실제 배포 환경 (선생님 Firebase 정보)
+    // Standard Environment (Fallback)
     firebaseConfig = {
       apiKey: "AIzaSyAgDV2hh7m4j22EiZfgZXSVVdChgh_G00Y",
       authDomain: "reservation-system-8440f.firebaseapp.com",
@@ -33,13 +33,14 @@ try {
   auth = getAuth(app);
   db = getFirestore(app);
 } catch (error) {
-  console.error("Firebase 초기화 오류:", error);
+  console.error("Firebase Initialization Error:", error);
 }
 
 const RESOURCES = ['2층 도서관', '4층 미래교실'];
 const TIME_SLOTS = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시', '방과후'];
 
-const CLASSES = ['선택 안함'];
+// 이용 학반 목록 생성 (동아리 추가)
+const CLASSES = ['선택 안함', '동아리']; 
 for (let grade = 1; grade <= 3; grade++) {
   for (let cls = 1; cls <= 6; cls++) {
     CLASSES.push(`${grade}학년 ${cls}반`);
@@ -73,10 +74,7 @@ export default function App() {
           await signInAnonymously(auth);
         }
       } catch (error) {
-        console.error("인증 실패:", error);
-        if (error.code === 'auth/operation-not-allowed') {
-          setMessage({ type: 'error', text: 'Firebase Console에서 익명 로그인을 활성화해주세요.' });
-        }
+        console.error("Authentication Failed:", error);
       }
     };
 
