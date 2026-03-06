@@ -39,7 +39,6 @@ try {
 const RESOURCES = ['2층 도서관', '4층 미래교실'];
 const TIME_SLOTS = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시', '방과후'];
 
-// 이용 학반 목록 생성 (동아리 추가)
 const CLASSES = ['선택 안함', '동아리']; 
 for (let grade = 1; grade <= 3; grade++) {
   for (let cls = 1; cls <= 6; cls++) {
@@ -58,6 +57,8 @@ export default function App() {
   const [userName, setUserName] = useState('');
   const [targetClass, setTargetClass] = useState(CLASSES[0]);
   const [isUnavailable, setIsUnavailable] = useState(false);
+  const [isAllDay, setIsAllDay] = useState(false);
+  const [unavailableReason, setUnavailableReason] = useState(''); // 예약 불가 사유 상태 추가
 
   const [message, setMessage] = useState({ type: '', text: '' }); 
   const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -118,22 +119,40 @@ export default function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!time) { setMessage({ type: 'error', text: '시간을 선택하세요.' }); return; }
+    if (!isAllDay && !time) { setMessage({ type: 'error', text: '시간을 선택하세요.' }); return; }
     if (!isUnavailable && !userName) { setMessage({ type: 'error', text: '이름을 입력하세요.' }); return; }
-    if (bookedTimeSlots.includes(time)) { setMessage({ type: 'error', text: '이미 예약됨.' }); return; }
+    if (isUnavailable && !unavailableReason) { setMessage({ type: 'error', text: '불가 사유를 입력하세요.' }); return; }
+    if (!isAllDay && bookedTimeSlots.includes(time)) { setMessage({ type: 'error', text: '이미 예약됨.' }); return; }
 
     try {
       const reservationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'space_reservations');
-      await addDoc(reservationsRef, {
-        date, resource, time,
-        userName: isUnavailable ? '관리자' : userName,
-        targetClass: isUnavailable ? '' : targetClass,
-        isUnavailable,
-        createdAt: serverTimestamp(),
-        userId: user.uid
-      });
+      
+      const targetSlots = isAllDay 
+        ? TIME_SLOTS.filter(slot => !bookedTimeSlots.includes(slot))
+        : [time];
+
+      if (targetSlots.length === 0) {
+        setMessage({ type: 'error', text: '차단할 수 있는 남은 교시가 없습니다.' });
+        return;
+      }
+
+      const uploadPromises = targetSlots.map(slot => 
+        addDoc(reservationsRef, {
+          date, resource, time: slot,
+          userName: isUnavailable ? (unavailableReason || '관리자') : userName,
+          targetClass: isUnavailable ? '' : targetClass,
+          isUnavailable,
+          createdAt: serverTimestamp(),
+          userId: user.uid
+        })
+      );
+
+      await Promise.all(uploadPromises);
+
       setMessage({ type: 'success', text: isUnavailable ? '예약 불가 설정 완료' : '예약 등록 완료' });
       setTime('');
+      setIsAllDay(false);
+      setUnavailableReason('');
       if (!isUnavailable) setTargetClass(CLASSES[0]);
     } catch (error) {
       setMessage({ type: 'error', text: '오류 발생' });
@@ -198,21 +217,39 @@ export default function App() {
                   {RESOURCES.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
-              <div>
-                <label className="text-sm font-bold text-slate-600 block mb-2">교시</label>
-                <div className="grid grid-cols-4 gap-2">
-                  {TIME_SLOTS.map(slot => (
-                    <button key={slot} type="button" disabled={bookedTimeSlots.includes(slot)} onClick={() => setTime(slot)}
-                      className={`py-2 text-xs rounded-lg border font-bold transition-colors ${bookedTimeSlots.includes(slot) ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : time === slot ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'}`}>
-                      {slot}
-                    </button>
-                  ))}
+              {!isAllDay && (
+                <div>
+                  <label className="text-sm font-bold text-slate-600 block mb-2">교시</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {TIME_SLOTS.map(slot => (
+                      <button key={slot} type="button" disabled={bookedTimeSlots.includes(slot)} onClick={() => setTime(slot)}
+                        className={`py-2 text-xs rounded-lg border font-bold transition-colors ${bookedTimeSlots.includes(slot) ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : time === slot ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'}`}>
+                        {slot}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+              )}
+              
+              <div className="p-3 bg-red-50 rounded-lg border border-red-100 mt-2 space-y-3">
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" id="isUn" checked={isUnavailable} onChange={(e) => { setIsUnavailable(e.target.checked); if(!e.target.checked) { setIsAllDay(false); setUnavailableReason(''); } }} className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
+                  <label htmlFor="isUn" className="text-sm font-bold text-red-700 cursor-pointer select-none">이 시간대 예약 불가 설정</label>
+                </div>
+                {isUnavailable && (
+                  <>
+                    <div className="flex items-center gap-2 pl-6">
+                      <input type="checkbox" id="isAll" checked={isAllDay} onChange={(e) => setIsAllDay(e.target.checked)} className="w-3.5 h-3.5 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
+                      <label htmlFor="isAll" className="text-xs font-bold text-red-600 cursor-pointer select-none">종일(전체 교시) 적용</label>
+                    </div>
+                    <div className="pl-6">
+                      <label className="text-[11px] font-bold text-red-600 block mb-1">불가 사유 (예: 행사명, 공사 등)</label>
+                      <input type="text" value={unavailableReason} onChange={(e) => setUnavailableReason(e.target.value)} placeholder="사유를 입력하세요" className="w-full p-2 text-sm border border-red-200 rounded focus:ring-1 focus:ring-red-500 outline-none" required={isUnavailable} />
+                    </div>
+                  </>
+                )}
               </div>
-              <div className="flex items-center gap-2 p-3 bg-red-50 rounded-lg border border-red-100 mt-2">
-                <input type="checkbox" id="isUn" checked={isUnavailable} onChange={(e) => setIsUnavailable(e.target.checked)} className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
-                <label htmlFor="isUn" className="text-sm font-bold text-red-700 cursor-pointer select-none">이 시간대 예약 불가 설정</label>
-              </div>
+
               {!isUnavailable && (
                 <>
                   <div>
@@ -228,7 +265,7 @@ export default function App() {
                 </>
               )}
               <button type="submit" className={`w-full py-3 mt-4 rounded-lg text-white font-bold shadow-sm transition-colors ${isUnavailable ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                {isUnavailable ? '예약 불가 등록' : '예약 등록하기'}
+                {isUnavailable ? (isAllDay ? '전체 교시 예약 불가 등록' : '예약 불가 등록') : '예약 등록하기'}
               </button>
             </form>
           </div>
@@ -274,7 +311,9 @@ export default function App() {
                               <span className="text-slate-500 font-bold truncate">| {res.targetClass}</span>
                             )}
                           </div>
-                          <span className="font-bold truncate">{res.isUnavailable ? '예약 불가' : res.userName}</span>
+                          <span className="font-bold truncate">
+                            {res.isUnavailable ? `예약 불가 (${res.userName})` : res.userName}
+                          </span>
                           <button onClick={(e) => { e.stopPropagation(); handleDelete(res.id); }} className="absolute top-1.5 right-1.5 hidden group-hover:block text-slate-400 hover:text-red-600 bg-white rounded p-0.5 shadow-sm">
                             <Trash2 size={12}/>
                           </button>
