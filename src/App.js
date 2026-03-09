@@ -58,7 +58,7 @@ export default function App() {
   const [targetClass, setTargetClass] = useState(CLASSES[0]);
   const [isUnavailable, setIsUnavailable] = useState(false);
   const [isAllDay, setIsAllDay] = useState(false);
-  const [unavailableReason, setUnavailableReason] = useState(''); // 예약 불가 사유 상태 추가
+  const [unavailableReason, setUnavailableReason] = useState('');
 
   const [message, setMessage] = useState({ type: '', text: '' }); 
   const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -116,6 +116,14 @@ export default function App() {
       .filter(r => r.date === date && r.resource === resource)
       .map(r => r.time);
   }, [reservations, date, resource]);
+
+  // 선택된 날짜와 장소에 대한 상세 예약 매핑 (표 렌더링용)
+  const dailyReservations = useMemo(() => {
+    const daily = reservations.filter(r => r.date === date && r.resource === activeTab);
+    const map = {};
+    daily.forEach(r => { map[r.time] = r; });
+    return map;
+  }, [reservations, date, activeTab]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -204,70 +212,130 @@ export default function App() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit">
-            <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-800">신규 예약</h2>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="text-sm font-bold text-slate-600 block mb-1">날짜</label>
-                <input type="date" value={date} onChange={(e) => { setDate(e.target.value); setTime(''); }} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
-              </div>
-              <div>
-                <label className="text-sm font-bold text-slate-600 block mb-1">장소</label>
-                <select value={resource} onChange={(e) => { setResource(e.target.value); setActiveTab(e.target.value); setTime(''); }} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                  {RESOURCES.map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-              {!isAllDay && (
+          <div className="space-y-6">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit">
+              <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-800">신규 예약</h2>
+              <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="text-sm font-bold text-slate-600 block mb-2">교시</label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {TIME_SLOTS.map(slot => (
-                      <button key={slot} type="button" disabled={bookedTimeSlots.includes(slot)} onClick={() => setTime(slot)}
-                        className={`py-2 text-xs rounded-lg border font-bold transition-colors ${bookedTimeSlots.includes(slot) ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : time === slot ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'}`}>
-                        {slot}
-                      </button>
-                    ))}
-                  </div>
+                  <label className="text-sm font-bold text-slate-600 block mb-1">날짜</label>
+                  <input type="date" value={date} onChange={(e) => { setDate(e.target.value); setTime(''); }} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
                 </div>
-              )}
-              
-              <div className="p-3 bg-red-50 rounded-lg border border-red-100 mt-2 space-y-3">
-                <div className="flex items-center gap-2">
-                  <input type="checkbox" id="isUn" checked={isUnavailable} onChange={(e) => { setIsUnavailable(e.target.checked); if(!e.target.checked) { setIsAllDay(false); setUnavailableReason(''); } }} className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
-                  <label htmlFor="isUn" className="text-sm font-bold text-red-700 cursor-pointer select-none">이 시간대 예약 불가 설정</label>
+                <div>
+                  <label className="text-sm font-bold text-slate-600 block mb-1">장소</label>
+                  <select value={resource} onChange={(e) => { setResource(e.target.value); setActiveTab(e.target.value); setTime(''); }} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                    {RESOURCES.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
                 </div>
-                {isUnavailable && (
-                  <>
-                    <div className="flex items-center gap-2 pl-6">
-                      <input type="checkbox" id="isAll" checked={isAllDay} onChange={(e) => setIsAllDay(e.target.checked)} className="w-3.5 h-3.5 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
-                      <label htmlFor="isAll" className="text-xs font-bold text-red-600 cursor-pointer select-none">종일(전체 교시) 적용</label>
+                {!isAllDay && (
+                  <div>
+                    <label className="text-sm font-bold text-slate-600 block mb-2">교시</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {TIME_SLOTS.map(slot => (
+                        <button key={slot} type="button" disabled={bookedTimeSlots.includes(slot)} onClick={() => setTime(slot)}
+                          className={`py-2 text-xs rounded-lg border font-bold transition-colors ${bookedTimeSlots.includes(slot) ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : time === slot ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'}`}>
+                          {slot}
+                        </button>
+                      ))}
                     </div>
-                    <div className="pl-6">
-                      <label className="text-[11px] font-bold text-red-600 block mb-1">불가 사유 (예: 행사명, 공사 등)</label>
-                      <input type="text" value={unavailableReason} onChange={(e) => setUnavailableReason(e.target.value)} placeholder="사유를 입력하세요" className="w-full p-2 text-sm border border-red-200 rounded focus:ring-1 focus:ring-red-500 outline-none" required={isUnavailable} />
+                  </div>
+                )}
+                
+                <div className="p-3 bg-red-50 rounded-lg border border-red-100 mt-2 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" id="isUn" checked={isUnavailable} onChange={(e) => { setIsUnavailable(e.target.checked); if(!e.target.checked) { setIsAllDay(false); setUnavailableReason(''); } }} className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
+                    <label htmlFor="isUn" className="text-sm font-bold text-red-700 cursor-pointer select-none">이 시간대 예약 불가 설정</label>
+                  </div>
+                  {isUnavailable && (
+                    <>
+                      <div className="flex items-center gap-2 pl-6">
+                        <input type="checkbox" id="isAll" checked={isAllDay} onChange={(e) => setIsAllDay(e.target.checked)} className="w-3.5 h-3.5 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
+                        <label htmlFor="isAll" className="text-xs font-bold text-red-600 cursor-pointer select-none">종일(전체 교시) 적용</label>
+                      </div>
+                      <div className="pl-6">
+                        <label className="text-[11px] font-bold text-red-600 block mb-1">불가 사유 (예: 행사명, 공사 등)</label>
+                        <input type="text" value={unavailableReason} onChange={(e) => setUnavailableReason(e.target.value)} placeholder="사유를 입력하세요" className="w-full p-2 text-sm border border-red-200 rounded focus:ring-1 focus:ring-red-500 outline-none" required={isUnavailable} />
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {!isUnavailable && (
+                  <>
+                    <div>
+                      <label className="text-sm font-bold text-slate-600 block mb-1">예약자명 (교사명)</label>
+                      <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="예: 홍길동" className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                    </div>
+                    <div>
+                      <label className="text-sm font-bold text-slate-600 block mb-1">이용 학반</label>
+                      <select value={targetClass} onChange={(e) => setTargetClass(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                        {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
                     </div>
                   </>
                 )}
-              </div>
+                <button type="submit" className={`w-full py-3 mt-4 rounded-lg text-white font-bold shadow-sm transition-colors ${isUnavailable ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                  {isUnavailable ? (isAllDay ? '전체 교시 예약 불가 등록' : '예약 불가 등록') : '예약 등록하기'}
+                </button>
+              </form>
+            </div>
 
-              {!isUnavailable && (
-                <>
-                  <div>
-                    <label className="text-sm font-bold text-slate-600 block mb-1">예약자명 (교사명)</label>
-                    <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="예: 홍길동" className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
-                  </div>
-                  <div>
-                    <label className="text-sm font-bold text-slate-600 block mb-1">이용 학반</label>
-                    <select value={targetClass} onChange={(e) => setTargetClass(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                      {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </div>
-                </>
-              )}
-              <button type="submit" className={`w-full py-3 mt-4 rounded-lg text-white font-bold shadow-sm transition-colors ${isUnavailable ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                {isUnavailable ? (isAllDay ? '전체 교시 예약 불가 등록' : '예약 불가 등록') : '예약 등록하기'}
-              </button>
-            </form>
+            {/* 날짜 선택 시 상세 예약 현황을 보여주는 표 (도식화 영역) */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+              <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-800 flex justify-between items-end">
+                <span>일일 예약 현황</span>
+                <span className="text-sm font-normal text-slate-500">{date} | {activeTab}</span>
+              </h2>
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm text-left whitespace-nowrap">
+                  <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200">
+                    <tr>
+                      <th className="px-3 py-2 text-center w-14">교시</th>
+                      <th className="px-3 py-2 text-center w-16">상태</th>
+                      <th className="px-3 py-2">예약자(사유)</th>
+                      <th className="px-3 py-2 text-center w-10">관리</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {TIME_SLOTS.map(slot => {
+                      const res = dailyReservations[slot];
+                      return (
+                        <tr key={slot} className="border-b last:border-0 border-slate-100 hover:bg-slate-50 transition-colors">
+                          <td className="px-3 py-2 text-center font-bold text-slate-600 bg-slate-50 border-r border-slate-100">{slot}</td>
+                          {res ? (
+                            res.isUnavailable ? (
+                              <>
+                                <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-red-100 text-red-700">불가</span></td>
+                                <td className="px-3 py-2 text-red-700 font-bold truncate max-w-[120px]" title={res.userName}>{res.userName}</td>
+                                <td className="px-3 py-2 text-center">
+                                  <button onClick={() => handleDelete(res.id)} className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14}/></button>
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-blue-100 text-blue-700">예약</span></td>
+                                <td className="px-3 py-2 text-slate-800 font-medium truncate max-w-[120px]" title={`${res.userName} ${res.targetClass !== '선택 안함' ? `(${res.targetClass})` : ''}`}>
+                                  {res.userName}
+                                  {res.targetClass !== '선택 안함' && <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.targetClass})</span>}
+                                </td>
+                                <td className="px-3 py-2 text-center">
+                                  <button onClick={() => handleDelete(res.id)} className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14}/></button>
+                                </td>
+                              </>
+                            )
+                          ) : (
+                            <>
+                              <td className="px-3 py-2 text-center"><span className="text-[11px] text-slate-400">가능</span></td>
+                              <td className="px-3 py-2 text-slate-400">-</td>
+                              <td className="px-3 py-2"></td>
+                            </>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
 
           <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -314,9 +382,6 @@ export default function App() {
                           <span className="font-bold truncate">
                             {res.isUnavailable ? `예약 불가 (${res.userName})` : res.userName}
                           </span>
-                          <button onClick={(e) => { e.stopPropagation(); handleDelete(res.id); }} className="absolute top-1.5 right-1.5 hidden group-hover:block text-slate-400 hover:text-red-600 bg-white rounded p-0.5 shadow-sm">
-                            <Trash2 size={12}/>
-                          </button>
                         </div>
                       ))}
                     </div>
