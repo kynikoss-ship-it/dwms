@@ -50,7 +50,7 @@ for (let grade = 1; grade <= 3; grade++) {
 }
 
 // 관리자 비밀번호 (배포 시 환경변수로 분리 권장)
-const ADMIN_PASSCODE = process.env.REACT_APP_ADMIN_PASSCODE || 'admin1234';
+const ADMIN_PASSCODE = process.env.REACT_APP_ADMIN_PASSCODE || '3328';
 
 // --- Helpers ---
 // (#11) 로컬 시간 기준 YYYY-MM-DD. toISOString()은 UTC 기준이라 한국 아침에 어제 날짜가 나오는 버그가 있음.
