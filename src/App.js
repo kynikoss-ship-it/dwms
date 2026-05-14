@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Calendar, Clock, MapPin, User, FileText, Trash2, CheckCircle, AlertCircle, ChevronLeft, ChevronRight, Users, Ban } from 'lucide-react';
+import { MapPin, Trash2, CheckCircle, AlertCircle, ChevronLeft, ChevronRight, Shield, ShieldOff } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
+import {
+  getFirestore, collection, onSnapshot, doc, deleteDoc,
+  serverTimestamp, runTransaction
+} from 'firebase/firestore';
+
+/* global __firebase_config, __app_id, __initial_auth_token */
 
 // --- Firebase Initialization ---
 let app, auth, db, appId;
@@ -11,12 +16,10 @@ let isCanvasEnvironment = false;
 try {
   let firebaseConfig;
   if (typeof __firebase_config !== 'undefined') {
-    // Canvas Environment
     firebaseConfig = JSON.parse(__firebase_config);
     appId = typeof __app_id !== 'undefined' ? __app_id : 'school-reservation-system';
     isCanvasEnvironment = true;
   } else {
-    // Standard Environment (Fallback)
     firebaseConfig = {
       apiKey: "AIzaSyAgDV2hh7m4j22EiZfgZXSVVdChgh_G00Y",
       authDomain: "reservation-system-8440f.firebaseapp.com",
@@ -28,7 +31,7 @@ try {
     };
     appId = "school-reservation-system";
   }
-  
+
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
@@ -39,19 +42,39 @@ try {
 const RESOURCES = ['2층 도서관', '4층 미래교실'];
 const TIME_SLOTS = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시', '방과후'];
 
-const CLASSES = ['선택 안함', '동아리']; 
+const CLASSES = ['선택 안함', '동아리'];
 for (let grade = 1; grade <= 3; grade++) {
   for (let cls = 1; cls <= 6; cls++) {
     CLASSES.push(`${grade}학년 ${cls}반`);
   }
 }
 
+// 관리자 비밀번호 (배포 시 환경변수로 분리 권장)
+const ADMIN_PASSCODE = process.env.REACT_APP_ADMIN_PASSCODE || 'admin1234';
+
+// --- Helpers ---
+// (#11) 로컬 시간 기준 YYYY-MM-DD. toISOString()은 UTC 기준이라 한국 아침에 어제 날짜가 나오는 버그가 있음.
+const getLocalDateString = (d = new Date()) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+// (#3) 결정적 doc ID — Firestore가 doc ID 중복을 막아주므로 슬롯 고유성 보장
+// 슬래시만 금지 문자이므로 sanitize
+const makeSlotId = (date, resource, time) =>
+  `${date}__${resource.replace(/\//g, '_')}__${time}`;
+
 export default function App() {
   const [user, setUser] = useState(null);
+  const [authError, setAuthError] = useState(false);
   const [reservations, setReservations] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const todayStr = getLocalDateString();
+
+  const [date, setDate] = useState(todayStr);
   const [resource, setResource] = useState(RESOURCES[0]);
   const [time, setTime] = useState('');
   const [userName, setUserName] = useState('');
@@ -60,12 +83,17 @@ export default function App() {
   const [isAllDay, setIsAllDay] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState('');
 
-  const [message, setMessage] = useState({ type: '', text: '' }); 
+  // (#7) 제출 중복 방지
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  // (#2) 관리자 모드 — 본인 외 예약 삭제 권한
+  const [adminMode, setAdminMode] = useState(false);
+
+  const [message, setMessage] = useState({ type: '', text: '' });
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [activeTab, setActiveTab] = useState(RESOURCES[0]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth) { setAuthError(true); setLoading(false); return; }
 
     const initAuth = async () => {
       try {
@@ -76,11 +104,16 @@ export default function App() {
         }
       } catch (error) {
         console.error("Authentication Failed:", error);
+        setAuthError(true);
+        setLoading(false);
       }
     };
 
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) setLoading(false);
+    });
     return () => unsubscribe();
   }, []);
 
@@ -89,7 +122,7 @@ export default function App() {
 
     const reservationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'space_reservations');
     const unsubscribe = onSnapshot(reservationsRef, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       data.sort((a, b) => {
         if (a.date === b.date) return TIME_SLOTS.indexOf(a.time) - TIME_SLOTS.indexOf(b.time);
         return a.date > b.date ? 1 : -1;
@@ -117,7 +150,6 @@ export default function App() {
       .map(r => r.time);
   }, [reservations, date, resource]);
 
-  // 선택된 날짜와 장소에 대한 상세 예약 매핑 (표 렌더링용)
   const dailyReservations = useMemo(() => {
     const daily = reservations.filter(r => r.date === date && r.resource === activeTab);
     const map = {};
@@ -125,17 +157,28 @@ export default function App() {
     return map;
   }, [reservations, date, activeTab]);
 
+  const isPastDate = date < todayStr;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    if (!user) { setMessage({ type: 'error', text: '인증되지 않았습니다.' }); return; }
+
+    // (#6) 과거 날짜 차단 (관리자는 예외)
+    if (isPastDate && !adminMode) {
+      setMessage({ type: 'error', text: '과거 날짜는 예약할 수 없습니다.' });
+      return;
+    }
     if (!isAllDay && !time) { setMessage({ type: 'error', text: '시간을 선택하세요.' }); return; }
-    if (!isUnavailable && !userName) { setMessage({ type: 'error', text: '이름을 입력하세요.' }); return; }
-    if (isUnavailable && !unavailableReason) { setMessage({ type: 'error', text: '불가 사유를 입력하세요.' }); return; }
+    if (!isUnavailable && !userName.trim()) { setMessage({ type: 'error', text: '이름을 입력하세요.' }); return; }
+    if (isUnavailable && !unavailableReason.trim()) { setMessage({ type: 'error', text: '불가 사유를 입력하세요.' }); return; }
     if (!isAllDay && bookedTimeSlots.includes(time)) { setMessage({ type: 'error', text: '이미 예약됨.' }); return; }
 
+    setIsSubmitting(true);
     try {
       const reservationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'space_reservations');
-      
-      const targetSlots = isAllDay 
+
+      const targetSlots = isAllDay
         ? TIME_SLOTS.filter(slot => !bookedTimeSlots.includes(slot))
         : [time];
 
@@ -144,38 +187,93 @@ export default function App() {
         return;
       }
 
-      const uploadPromises = targetSlots.map(slot => 
-        addDoc(reservationsRef, {
-          date, resource, time: slot,
-          userName: isUnavailable ? (unavailableReason || '관리자') : userName,
-          targetClass: isUnavailable ? '' : targetClass,
-          isUnavailable,
-          createdAt: serverTimestamp(),
-          userId: user.uid
-        })
-      );
+      // (#3) 슬롯별 트랜잭션 — 동시 요청 시 doc ID 중복으로 충돌 감지
+      const conflicts = [];
+      for (const slot of targetSlots) {
+        const slotId = makeSlotId(date, resource, slot);
+        const slotRef = doc(reservationsRef, slotId);
+        try {
+          await runTransaction(db, async (tx) => {
+            const snap = await tx.get(slotRef);
+            if (snap.exists()) throw new Error('SLOT_TAKEN');
+            tx.set(slotRef, {
+              date, resource, time: slot,
+              userName: isUnavailable ? unavailableReason.trim() : userName.trim(),
+              targetClass: isUnavailable ? '' : targetClass,
+              isUnavailable,
+              createdAt: serverTimestamp(),
+              userId: user.uid,
+            });
+          });
+        } catch (err) {
+          if (err.message === 'SLOT_TAKEN') conflicts.push(slot);
+          else throw err;
+        }
+      }
 
-      await Promise.all(uploadPromises);
+      if (conflicts.length === targetSlots.length) {
+        setMessage({ type: 'error', text: '선택한 시간이 이미 예약되었습니다.' });
+      } else if (conflicts.length > 0) {
+        setMessage({ type: 'success', text: `일부 등록됨 — 충돌: ${conflicts.join(', ')}` });
+      } else {
+        setMessage({ type: 'success', text: isUnavailable ? '예약 불가 설정 완료' : '예약 등록 완료' });
+      }
 
-      setMessage({ type: 'success', text: isUnavailable ? '예약 불가 설정 완료' : '예약 등록 완료' });
       setTime('');
       setIsAllDay(false);
       setUnavailableReason('');
       if (!isUnavailable) setTargetClass(CLASSES[0]);
     } catch (error) {
-      setMessage({ type: 'error', text: '오류 발생' });
+      console.error(error);
+      setMessage({ type: 'error', text: '오류: ' + (error.message || '알 수 없음') });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleDelete = async (id) => {
+  // (#2) 본인 예약 또는 관리자 모드만 삭제 허용
+  const handleDelete = async (res) => {
+    const isOwner = user && res.userId === user.uid;
+    if (!isOwner && !adminMode) {
+      setMessage({ type: 'error', text: '본인이 등록한 예약만 삭제할 수 있습니다.' });
+      return;
+    }
+    if (!window.confirm('정말 삭제하시겠습니까?')) return;
+
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'space_reservations', id));
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'space_reservations', res.id));
       setMessage({ type: 'success', text: '삭제 완료' });
     } catch (error) {
-      setMessage({ type: 'error', text: '삭제 실패' });
+      console.error(error);
+      setMessage({ type: 'error', text: '삭제 실패: 권한이 없거나 네트워크 오류입니다.' });
     }
   };
 
+  const toggleAdminMode = () => {
+    if (adminMode) {
+      setAdminMode(false);
+      setMessage({ type: 'success', text: '관리자 모드 해제' });
+      return;
+    }
+    const input = window.prompt('관리자 비밀번호를 입력하세요');
+    if (input === null) return;
+    if (input === ADMIN_PASSCODE) {
+      setAdminMode(true);
+      setMessage({ type: 'success', text: '관리자 모드 활성화' });
+    } else {
+      setMessage({ type: 'error', text: '비밀번호가 일치하지 않습니다.' });
+    }
+  };
+
+  const canDelete = (res) => (user && res.userId === user.uid) || adminMode;
+
+  if (authError) return (
+    <div className="flex flex-col items-center justify-center min-h-screen p-6 text-center bg-slate-100">
+      <AlertCircle className="text-red-500 mb-4" size={48} />
+      <p className="font-bold text-slate-700">인증 실패</p>
+      <p className="text-sm text-slate-500 mt-2">네트워크 또는 Firebase 설정을 확인하세요.</p>
+    </div>
+  );
   if (loading) return <div className="flex items-center justify-center min-h-screen font-semibold text-slate-600">데이터 동기화 중...</div>;
 
   const prevMonth = () => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1));
@@ -192,16 +290,29 @@ export default function App() {
     return day !== 0 && day !== 6;
   });
 
-  const todayStr = new Date().toISOString().split('T')[0];
-
   return (
     <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">
-        <header className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            <MapPin className="text-blue-600" /> 도서관 및 미래교실 예약 시스템
-          </h1>
-          <p className="text-slate-500 mt-2 text-sm">실시간 동기화 예약 시스템</p>
+        <header className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex justify-between items-start gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+              <MapPin className="text-blue-600" /> 도서관 및 미래교실 예약 시스템
+            </h1>
+            <p className="text-slate-500 mt-2 text-sm">실시간 동기화 예약 시스템</p>
+          </div>
+          <button
+            onClick={toggleAdminMode}
+            title={adminMode ? '관리자 모드 해제' : '관리자 모드 진입'}
+            aria-label={adminMode ? '관리자 모드 해제' : '관리자 모드 진입'}
+            className={`shrink-0 p-2 rounded-lg border transition-colors text-xs font-bold flex items-center gap-1 ${
+              adminMode
+                ? 'bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100'
+                : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
+            }`}
+          >
+            {adminMode ? <Shield size={14} /> : <ShieldOff size={14} />}
+            {adminMode ? '관리자' : '일반'}
+          </button>
         </header>
 
         {message.text && (
@@ -218,7 +329,18 @@ export default function App() {
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label className="text-sm font-bold text-slate-600 block mb-1">날짜</label>
-                  <input type="date" value={date} onChange={(e) => { setDate(e.target.value); setTime(''); }} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => { setDate(e.target.value); setTime(''); }}
+                    className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                    required
+                  />
+                  {isPastDate && (
+                    <p className="text-[11px] text-amber-700 mt-1 font-bold">
+                      ⚠ 과거 날짜 — {adminMode ? '관리자 모드로 등록 가능' : '조회만 가능'}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="text-sm font-bold text-slate-600 block mb-1">장소</label>
@@ -239,16 +361,16 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                
+
                 <div className="p-3 bg-red-50 rounded-lg border border-red-100 mt-2 space-y-3">
                   <div className="flex items-center gap-2">
-                    <input type="checkbox" id="isUn" checked={isUnavailable} onChange={(e) => { setIsUnavailable(e.target.checked); if(!e.target.checked) { setIsAllDay(false); setUnavailableReason(''); } }} className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
+                    <input type="checkbox" id="isUn" checked={isUnavailable} onChange={(e) => { setIsUnavailable(e.target.checked); if (!e.target.checked) { setIsAllDay(false); setUnavailableReason(''); } }} className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500" />
                     <label htmlFor="isUn" className="text-sm font-bold text-red-700 cursor-pointer select-none">이 시간대 예약 불가 설정</label>
                   </div>
                   {isUnavailable && (
                     <>
                       <div className="flex items-center gap-2 pl-6">
-                        <input type="checkbox" id="isAll" checked={isAllDay} onChange={(e) => setIsAllDay(e.target.checked)} className="w-3.5 h-3.5 text-red-600 rounded border-slate-300 focus:ring-red-500"/>
+                        <input type="checkbox" id="isAll" checked={isAllDay} onChange={(e) => setIsAllDay(e.target.checked)} className="w-3.5 h-3.5 text-red-600 rounded border-slate-300 focus:ring-red-500" />
                         <label htmlFor="isAll" className="text-xs font-bold text-red-600 cursor-pointer select-none">종일(전체 교시) 적용</label>
                       </div>
                       <div className="pl-6">
@@ -273,13 +395,26 @@ export default function App() {
                     </div>
                   </>
                 )}
-                <button type="submit" className={`w-full py-3 mt-4 rounded-lg text-white font-bold shadow-sm transition-colors ${isUnavailable ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                  {isUnavailable ? (isAllDay ? '전체 교시 예약 불가 등록' : '예약 불가 등록') : '예약 등록하기'}
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className={`w-full py-3 mt-4 rounded-lg text-white font-bold shadow-sm transition-colors ${
+                    isSubmitting
+                      ? 'bg-slate-400 cursor-not-allowed'
+                      : isUnavailable
+                        ? 'bg-red-600 hover:bg-red-700'
+                        : 'bg-blue-600 hover:bg-blue-700'
+                  }`}
+                >
+                  {isSubmitting
+                    ? '등록 중...'
+                    : isUnavailable
+                      ? (isAllDay ? '전체 교시 예약 불가 등록' : '예약 불가 등록')
+                      : '예약 등록하기'}
                 </button>
               </form>
             </div>
 
-            {/* 날짜 선택 시 상세 예약 현황을 보여주는 표 (도식화 영역) */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
               <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-800 flex justify-between items-end">
                 <span>일일 예약 현황</span>
@@ -307,7 +442,9 @@ export default function App() {
                                 <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-red-100 text-red-700">불가</span></td>
                                 <td className="px-3 py-2 text-red-700 font-bold truncate max-w-[120px]" title={res.userName}>{res.userName}</td>
                                 <td className="px-3 py-2 text-center">
-                                  <button onClick={() => handleDelete(res.id)} className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14}/></button>
+                                  {canDelete(res) && (
+                                    <button onClick={() => handleDelete(res)} aria-label="예약 삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
+                                  )}
                                 </td>
                               </>
                             ) : (
@@ -318,7 +455,9 @@ export default function App() {
                                   {res.targetClass !== '선택 안함' && <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.targetClass})</span>}
                                 </td>
                                 <td className="px-3 py-2 text-center">
-                                  <button onClick={() => handleDelete(res.id)} className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14}/></button>
+                                  {canDelete(res) && (
+                                    <button onClick={() => handleDelete(res)} aria-label="예약 삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
+                                  )}
                                 </td>
                               </>
                             )
@@ -341,9 +480,9 @@ export default function App() {
           <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
             <div className="flex justify-between items-center mb-4">
               <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border border-slate-200">
-                <button onClick={prevMonth} className="p-1 hover:bg-white rounded transition-colors"><ChevronLeft size={20} className="text-slate-600"/></button>
+                <button onClick={prevMonth} className="p-1 hover:bg-white rounded transition-colors" aria-label="이전 달"><ChevronLeft size={20} className="text-slate-600" /></button>
                 <span className="font-bold w-24 text-center text-slate-800">{year}년 {month + 1}월</span>
-                <button onClick={nextMonth} className="p-1 hover:bg-white rounded transition-colors"><ChevronRight size={20} className="text-slate-600"/></button>
+                <button onClick={nextMonth} className="p-1 hover:bg-white rounded transition-colors" aria-label="다음 달"><ChevronRight size={20} className="text-slate-600" /></button>
               </div>
               <div className="flex gap-1">
                 {RESOURCES.map(res => (
@@ -354,7 +493,7 @@ export default function App() {
                 ))}
               </div>
             </div>
-            
+
             <div className="grid grid-cols-5 gap-px bg-slate-200 rounded-lg overflow-hidden border border-slate-200">
               {['월', '화', '수', '목', '금'].map(d => <div key={d} className="bg-slate-50 py-2 text-center text-sm font-bold text-slate-600">{d}</div>)}
               {blanks.map((_, i) => <div key={`blank-${i}`} className="bg-white min-h-[120px]"></div>)}
@@ -365,8 +504,8 @@ export default function App() {
                 const isToday = todayStr === dateStr;
 
                 return (
-                  <div key={d} onClick={() => { setDate(dateStr); setTime(''); if(resource!==activeTab) setResource(activeTab); }} 
-                       className={`bg-white min-h-[140px] p-2 border-t border-slate-100 cursor-pointer transition-colors hover:bg-blue-50/30 ${isSelected ? 'ring-2 ring-inset ring-blue-500 bg-blue-50/30' : ''}`}>
+                  <div key={d} onClick={() => { setDate(dateStr); setTime(''); if (resource !== activeTab) setResource(activeTab); }}
+                    className={`bg-white min-h-[140px] p-2 border-t border-slate-100 cursor-pointer transition-colors hover:bg-blue-50/30 ${isSelected ? 'ring-2 ring-inset ring-blue-500 bg-blue-50/30' : ''}`}>
                     <div className={`text-sm font-bold w-7 h-7 flex items-center justify-center rounded-lg mb-2 transition-colors ${isToday ? 'bg-blue-600 text-white' : isSelected ? 'text-blue-600' : 'text-slate-700'}`}>
                       {d}
                     </div>
