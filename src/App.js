@@ -39,7 +39,10 @@ try {
   console.error("Firebase Initialization Error:", error);
 }
 
-const RESOURCES = ['2층 도서관', '4층 미래교실'];
+// (#행사) 행사(학생)을 맨 앞에 두면 탭/select에서 자동으로 '2층 도서관' 왼쪽에 위치
+const EVENT_RESOURCE = '행사(학생)';
+const RESOURCES = [EVENT_RESOURCE, '2층 도서관', '4층 미래교실'];
+const EVENT_GRADES = ['1', '2', '3'];
 const TIME_SLOTS = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시', '방과후'];
 
 const CLASSES = ['선택 안함', '동아리'];
@@ -66,6 +69,13 @@ const getLocalDateString = (d = new Date()) => {
 const makeSlotId = (date, resource, time) =>
   `${date}__${resource.replace(/\//g, '_')}__${time}`;
 
+// (#행사) 대상 학년 배열 → 표시용 문자열. 3개 전부면 '전학년'.
+const formatGrades = (grades) => {
+  if (!Array.isArray(grades) || grades.length === 0) return '';
+  if (grades.length >= 3) return '전학년';
+  return [...grades].sort().map(g => `${g}학년`).join(', ');
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState(false);
@@ -79,6 +89,9 @@ export default function App() {
   const [time, setTime] = useState('');
   const [userName, setUserName] = useState('');
   const [targetClass, setTargetClass] = useState(CLASSES[0]);
+  // (#행사) 행사 전용 입력값
+  const [targetGrades, setTargetGrades] = useState([]);
+  const [eventName, setEventName] = useState('');
   const [isUnavailable, setIsUnavailable] = useState(false);
   const [isAllDay, setIsAllDay] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState('');
@@ -144,6 +157,8 @@ export default function App() {
     }
   }, [message]);
 
+  const isEvent = resource === EVENT_RESOURCE;
+
   const bookedTimeSlots = useMemo(() => {
     return reservations
       .filter(r => r.date === date && r.resource === resource)
@@ -159,6 +174,12 @@ export default function App() {
 
   const isPastDate = date < todayStr;
 
+  const toggleGrade = (g) => {
+    setTargetGrades(prev =>
+      prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g].sort()
+    );
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
@@ -171,6 +192,9 @@ export default function App() {
     }
     if (!isAllDay && !time) { setMessage({ type: 'error', text: '시간을 선택하세요.' }); return; }
     if (!isUnavailable && !userName.trim()) { setMessage({ type: 'error', text: '이름을 입력하세요.' }); return; }
+    // (#행사) 행사 탭 전용 검증
+    if (isEvent && !isUnavailable && targetGrades.length === 0) { setMessage({ type: 'error', text: '대상 학년을 선택하세요.' }); return; }
+    if (isEvent && !isUnavailable && !eventName.trim()) { setMessage({ type: 'error', text: '행사명을 입력하세요.' }); return; }
     if (isUnavailable && !unavailableReason.trim()) { setMessage({ type: 'error', text: '불가 사유를 입력하세요.' }); return; }
     if (!isAllDay && bookedTimeSlots.includes(time)) { setMessage({ type: 'error', text: '이미 예약됨.' }); return; }
 
@@ -199,8 +223,11 @@ export default function App() {
             tx.set(slotRef, {
               date, resource, time: slot,
               userName: isUnavailable ? unavailableReason.trim() : userName.trim(),
-              targetClass: isUnavailable ? '' : targetClass,
+              targetClass: (isUnavailable || isEvent) ? '' : targetClass,
               isUnavailable,
+              isEvent,
+              eventName: (isEvent && !isUnavailable) ? eventName.trim() : '',
+              targetGrades: (isEvent && !isUnavailable) ? targetGrades : [],
               createdAt: serverTimestamp(),
               userId: user.uid,
             });
@@ -216,13 +243,17 @@ export default function App() {
       } else if (conflicts.length > 0) {
         setMessage({ type: 'success', text: `일부 등록됨 — 충돌: ${conflicts.join(', ')}` });
       } else {
-        setMessage({ type: 'success', text: isUnavailable ? '예약 불가 설정 완료' : '예약 등록 완료' });
+        setMessage({ type: 'success', text: isUnavailable ? '예약 불가 설정 완료' : (isEvent ? '행사 등록 완료' : '예약 등록 완료') });
       }
 
       setTime('');
       setIsAllDay(false);
       setUnavailableReason('');
-      if (!isUnavailable) setTargetClass(CLASSES[0]);
+      if (!isUnavailable) {
+        setTargetClass(CLASSES[0]);
+        setEventName('');
+        setTargetGrades([]);
+      }
     } catch (error) {
       console.error(error);
       setMessage({ type: 'error', text: '오류: ' + (error.message || '알 수 없음') });
@@ -296,7 +327,7 @@ export default function App() {
         <header className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex justify-between items-start gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-              <MapPin className="text-blue-600" /> 도서관 및 미래교실 예약 시스템
+              <MapPin className="text-blue-600" /> 동원중학교 통합 예약 시스템
             </h1>
             <p className="text-slate-500 mt-2 text-sm">실시간 동기화 예약 시스템</p>
           </div>
@@ -387,12 +418,32 @@ export default function App() {
                       <label className="text-sm font-bold text-slate-600 block mb-1">예약자명 (교사명)</label>
                       <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="예: 홍길동" className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
                     </div>
-                    <div>
-                      <label className="text-sm font-bold text-slate-600 block mb-1">이용 학반</label>
-                      <select value={targetClass} onChange={(e) => setTargetClass(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                        {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </div>
+                    {isEvent ? (
+                      <>
+                        <div>
+                          <label className="text-sm font-bold text-slate-600 block mb-2">대상자 (중복 선택 가능)</label>
+                          <div className="grid grid-cols-3 gap-2">
+                            {EVENT_GRADES.map(g => (
+                              <button key={g} type="button" onClick={() => toggleGrade(g)}
+                                className={`py-2 text-sm rounded-lg border font-bold transition-colors ${targetGrades.includes(g) ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'}`}>
+                                {g}학년
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-sm font-bold text-slate-600 block mb-1">행사명</label>
+                          <input type="text" value={eventName} onChange={(e) => setEventName(e.target.value)} placeholder="예: 진로체험의 날" className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required={isEvent} />
+                        </div>
+                      </>
+                    ) : (
+                      <div>
+                        <label className="text-sm font-bold text-slate-600 block mb-1">이용 학반</label>
+                        <select value={targetClass} onChange={(e) => setTargetClass(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                          {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    )}
                   </>
                 )}
                 <button
@@ -410,7 +461,9 @@ export default function App() {
                     ? '등록 중...'
                     : isUnavailable
                       ? (isAllDay ? '전체 교시 예약 불가 등록' : '예약 불가 등록')
-                      : '예약 등록하기'}
+                      : isEvent
+                        ? '행사 등록하기'
+                        : '예약 등록하기'}
                 </button>
               </form>
             </div>
@@ -441,6 +494,21 @@ export default function App() {
                               <>
                                 <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-red-100 text-red-700">불가</span></td>
                                 <td className="px-3 py-2 text-red-700 font-bold truncate max-w-[120px]" title={res.userName}>{res.userName}</td>
+                                <td className="px-3 py-2 text-center">
+                                  {canDelete(res) && (
+                                    <button onClick={() => handleDelete(res)} aria-label="예약 삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
+                                  )}
+                                </td>
+                              </>
+                            ) : res.isEvent ? (
+                              <>
+                                <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-purple-100 text-purple-700">행사</span></td>
+                                <td className="px-3 py-2 text-slate-800 font-medium truncate max-w-[120px]" title={`${res.eventName} (${res.userName})${res.targetGrades?.length ? ' · ' + formatGrades(res.targetGrades) : ''}`}>
+                                  {res.eventName}
+                                  <span className="ml-1 text-slate-500 text-[11px] font-normal">
+                                    ({res.userName}{res.targetGrades?.length ? ` · ${formatGrades(res.targetGrades)}` : ''})
+                                  </span>
+                                </td>
                                 <td className="px-3 py-2 text-center">
                                   {canDelete(res) && (
                                     <button onClick={() => handleDelete(res)} aria-label="예약 삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
@@ -511,15 +579,25 @@ export default function App() {
                     </div>
                     <div className="space-y-1.5 overflow-y-auto max-h-[100px]">
                       {items.map(res => (
-                        <div key={res.id} className={`text-[11px] p-2 rounded-lg border group relative flex flex-col gap-0.5 leading-tight ${res.isUnavailable ? 'bg-red-50 border-red-200 text-red-700' : 'bg-slate-50 border-slate-200 text-slate-800'}`}>
+                        <div key={res.id} className={`text-[11px] p-2 rounded-lg border group relative flex flex-col gap-0.5 leading-tight ${
+                          res.isUnavailable ? 'bg-red-50 border-red-200 text-red-700'
+                          : res.isEvent ? 'bg-purple-50 border-purple-200 text-purple-800'
+                          : 'bg-slate-50 border-slate-200 text-slate-800'}`}>
                           <div className="flex items-center gap-1 truncate">
-                            <span className={`font-black shrink-0 ${res.isUnavailable ? 'text-red-700' : 'text-blue-700'}`}>{res.time}</span>
-                            {!res.isUnavailable && res.targetClass && res.targetClass !== '선택 안함' && (
+                            <span className={`font-black shrink-0 ${res.isUnavailable ? 'text-red-700' : res.isEvent ? 'text-purple-700' : 'text-blue-700'}`}>{res.time}</span>
+                            {!res.isUnavailable && res.isEvent && res.targetGrades?.length > 0 && (
+                              <span className="text-slate-500 font-bold truncate">| {formatGrades(res.targetGrades)}</span>
+                            )}
+                            {!res.isUnavailable && !res.isEvent && res.targetClass && res.targetClass !== '선택 안함' && (
                               <span className="text-slate-500 font-bold truncate">| {res.targetClass}</span>
                             )}
                           </div>
                           <span className="font-bold truncate">
-                            {res.isUnavailable ? `예약 불가 (${res.userName})` : res.userName}
+                            {res.isUnavailable
+                              ? `예약 불가 (${res.userName})`
+                              : res.isEvent
+                                ? `${res.eventName} (${res.userName})`
+                                : res.userName}
                           </span>
                         </div>
                       ))}
