@@ -1,43 +1,37 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { MapPin, Trash2, CheckCircle, AlertCircle, ChevronLeft, ChevronRight, Shield, ShieldOff, X } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import {
   getFirestore, collection, onSnapshot, doc, deleteDoc,
   serverTimestamp, runTransaction
 } from 'firebase/firestore';
 
-/* global __firebase_config, __app_id, __initial_auth_token */
+/* global __firebase_config, __app_id */
+
+// Canvas 미리보기 환경 여부 확인
+const IS_CANVAS = typeof __firebase_config !== 'undefined' || typeof __app_id !== 'undefined';
 
 // --- Firebase Initialization ---
-let app, auth, db, appId;
-let isCanvasEnvironment = false;
+const firebaseConfig = {
+  apiKey: "AIzaSyAgDV2hh7m4j22EiZfgZXSVVdChgh_G00Y",
+  authDomain: "reservation-system-8440f.firebaseapp.com",
+  projectId: "reservation-system-8440f",
+  storageBucket: "reservation-system-8440f.firebasestorage.app",
+  messagingSenderId: "129906163603",
+  appId: "1:129906163603:web:5354b62468f1e229ba7266",
+  measurementId: "G-99TZFWY2QN"
+};
 
-try {
-  let firebaseConfig;
-  if (typeof __firebase_config !== 'undefined') {
-    firebaseConfig = JSON.parse(__firebase_config);
-    // 슬래시가 포함될 경우 Firestore 경로 에러가 발생하므로 언더스코어로 치환합니다.
-    appId = typeof __app_id !== 'undefined' ? __app_id.replace(/\//g, '_') : 'school-reservation-system';
-    isCanvasEnvironment = true;
-  } else {
-    firebaseConfig = {
-      apiKey: "AIzaSyAgDV2hh7m4j22EiZfgZXSVVdChgh_G00Y",
-      authDomain: "reservation-system-8440f.firebaseapp.com",
-      projectId: "reservation-system-8440f",
-      storageBucket: "reservation-system-8440f.firebasestorage.app",
-      messagingSenderId: "129906163603",
-      appId: "1:129906163603:web:5354b62468f1e229ba7266",
-      measurementId: "G-99TZFWY2QN"
-    };
-    appId = "school-reservation-system";
+let app, auth, db;
+if (!IS_CANVAS) {
+  try {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  } catch (error) {
+    console.error("Firebase Initialization Error:", error);
   }
-
-  app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
-  db = getFirestore(app);
-} catch (error) {
-  console.error("Firebase Initialization Error:", error);
 }
 
 // (#요청사항) 이름 및 목록 탭 변경
@@ -62,7 +56,6 @@ for (let grade = 1; grade <= 3; grade++) {
 }
 
 // 관리자 비밀번호 (배포 시 환경변수로 분리 권장)
-// Canvas 브라우저 환경에서 process.env 에러 방지
 const ADMIN_PASSCODE = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_ADMIN_PASSCODE) 
   ? process.env.REACT_APP_ADMIN_PASSCODE 
   : '3328';
@@ -105,7 +98,6 @@ const DetailRow = ({ label, value }) => (
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [authError, setAuthError] = useState(false);
   const [reservations, setReservations] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -152,35 +144,29 @@ export default function App() {
   const isTabVisitor = activeTab === VISITOR_RESOURCE;
 
   useEffect(() => {
-    if (!auth) { setAuthError(true); setLoading(false); return; }
+    if (IS_CANVAS) {
+      // Canvas(미리보기) 환경: 로컬 테스트 모드로 전환 (Firebase 연결 안 함)
+      setUser({ uid: 'local-test-user' });
+      setLoading(false);
+      return;
+    }
 
-    const initAuth = async () => {
-      try {
-        if (isCanvasEnvironment && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Authentication Failed:", error);
-        setAuthError(true);
-        setLoading(false);
-      }
-    };
+    // 실제 프로덕션(로컬) 환경: Firebase 연결
+    if (!auth) { setLoading(false); return; }
 
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (!u) setLoading(false);
+    signInAnonymously(auth).catch((err) => {
+      console.warn("익명 로그인 알림 (권한 설정에 따라 무시 가능):", err);
     });
-    return () => unsubscribe();
-  }, []);
 
-  useEffect(() => {
-    if (!user || !db) return;
+    const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
+      setUser(u || { uid: 'local-session-user' }); 
+      setLoading(false);
+    });
 
-    const reservationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'space_reservations');
-    const unsubscribe = onSnapshot(reservationsRef, (snapshot) => {
+    if (!db) return;
+    
+    const reservationsRef = collection(db, 'space_reservations');
+    const unsubscribeDB = onSnapshot(reservationsRef, (snapshot) => {
       const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       data.sort((a, b) => {
         if (a.date === b.date) {
@@ -193,12 +179,16 @@ export default function App() {
       setReservations(data);
       setLoading(false);
     }, (err) => {
-      console.error(err);
+      console.error("Firestore Error: ", err);
+      setMessage({ type: 'error', text: '데이터베이스 접근 권한이 없습니다. Firebase 규칙을 확인하세요.' });
       setLoading(false);
     });
 
-    return () => unsubscribe();
-  }, [user]);
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeDB) unsubscribeDB();
+    };
+  }, []);
 
   useEffect(() => {
     if (message.text) {
@@ -235,7 +225,6 @@ export default function App() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
-    if (!user) { setMessage({ type: 'error', text: '인증되지 않았습니다.' }); return; }
 
     if (isPastDate && !adminMode) {
       setMessage({ type: 'error', text: '과거 날짜는 예약할 수 없습니다.' });
@@ -261,18 +250,90 @@ export default function App() {
     if (isUnavailable && !unavailableReason.trim()) { setMessage({ type: 'error', text: '불가 사유를 입력하세요.' }); return; }
 
     setIsSubmitting(true);
-    try {
-      const reservationsRef = collection(db, 'artifacts', appId, 'public', 'data', 'space_reservations');
 
-      const targetSlots = isAllDay
-        ? currentSlots.filter(slot => !bookedTimeSlots.includes(slot))
-        : times.filter(slot => !bookedTimeSlots.includes(slot));
+    const targetSlots = isAllDay
+      ? currentSlots.filter(slot => !bookedTimeSlots.includes(slot))
+      : times.filter(slot => !bookedTimeSlots.includes(slot));
 
-      if (targetSlots.length === 0) {
-        setMessage({ type: 'error', text: '선택한 시간/교시가 모두 이미 예약되었습니다.' });
+    if (targetSlots.length === 0) {
+      setMessage({ type: 'error', text: '선택한 시간/교시가 모두 이미 예약되었습니다.' });
+      setIsSubmitting(false);
+      return;
+    }
+
+    // --- Canvas(미리보기) 전용 인메모리 로직 ---
+    if (IS_CANVAS) {
+      const conflicts = targetSlots.filter(slot => 
+        reservations.some(r => r.date === date && r.resource === resource && r.time === slot)
+      );
+
+      if (conflicts.length === targetSlots.length) {
+        setMessage({ type: 'error', text: '선택한 시간이 이미 예약되었습니다.' });
+        setIsSubmitting(false);
         return;
       }
 
+      const successfulSlots = targetSlots.filter(slot => !conflicts.includes(slot));
+      const newItems = successfulSlots.map(slot => ({
+        id: makeSlotId(date, resource, slot),
+        date, resource, time: slot,
+        userName: isUnavailable ? unavailableReason.trim() : (isVisitor ? visitorName.trim() : userName.trim()),
+        targetClass: (isUnavailable || isEvent || isVisitor) ? '' : targetClass,
+        isUnavailable, isEvent, isVisitor,
+        eventName: (isEvent && !isUnavailable) ? eventName.trim() : '',
+        targetGrades: (isEvent && !isUnavailable && isEventStudent) ? targetGrades : [],
+        targetGradesEtc: (isEvent && !isUnavailable && isEventStudent && targetGrades.includes('기타')) ? etcTarget.trim() : '',
+        isEventStudent: isEvent ? isEventStudent : false,
+        isEventStaff: isEvent ? isEventStaff : false,
+        visitorContact: isVisitor ? visitorContact.trim() : '',
+        purpose: isVisitor ? purpose.trim() : '',
+        hostName: isVisitor ? hostName.trim() : '',
+        hostContact: isVisitor ? hostContact.trim() : '',
+        createdAt: new Date(),
+        userId: user?.uid || 'anonymous',
+      }));
+
+      setReservations(prev => {
+        const updated = [...prev, ...newItems];
+        updated.sort((a, b) => {
+          if (a.date === b.date) {
+              const aSlots = a.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
+              const bSlots = b.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
+              return Math.max(0, aSlots.indexOf(a.time)) - Math.max(0, bSlots.indexOf(b.time));
+          }
+          return a.date > b.date ? 1 : -1;
+        });
+        return updated;
+      });
+
+      if (conflicts.length > 0) {
+        setMessage({ type: 'success', text: `일부 등록됨 — 충돌: ${conflicts.join(', ')}` });
+      } else {
+        setMessage({ type: 'success', text: isUnavailable ? '예약 불가 설정 완료' : (isEvent ? '행사 등록 완료' : isVisitor ? '방문자 등록 완료' : '예약 등록 완료') });
+      }
+
+      setTimes([]);
+      setIsAllDay(false);
+      setUnavailableReason('');
+      if (!isUnavailable) {
+        setTargetClass(CLASSES[0]);
+        setEventName('');
+        setTargetGrades([]);
+        setEtcTarget('');
+        setVisitorName('');
+        setVisitorContact('');
+        setPurpose('');
+        setHostName('');
+        setHostContact('');
+        setUserName('');
+      }
+      setIsSubmitting(false);
+      return;
+    }
+
+    // --- 프로덕션 전용 Firebase 로직 ---
+    try {
+      const reservationsRef = collection(db, 'space_reservations');
       const conflicts = [];
       for (const slot of targetSlots) {
         const slotId = makeSlotId(date, resource, slot);
@@ -298,7 +359,7 @@ export default function App() {
               hostName: isVisitor ? hostName.trim() : '',
               hostContact: isVisitor ? hostContact.trim() : '',
               createdAt: serverTimestamp(),
-              userId: user.uid,
+              userId: user?.uid || 'anonymous',
             });
           });
         } catch (err) {
@@ -332,7 +393,7 @@ export default function App() {
       }
     } catch (error) {
       console.error(error);
-      setMessage({ type: 'error', text: '오류: ' + (error.message || '알 수 없음') });
+      setMessage({ type: 'error', text: '오류: 저장 권한이 없습니다. (' + (error.message || '알 수 없음') + ')' });
     } finally {
       setIsSubmitting(false);
     }
@@ -346,8 +407,14 @@ export default function App() {
     }
     if (!window.confirm('정말 삭제하시겠습니까?')) return;
 
+    if (IS_CANVAS) {
+      setReservations(prev => prev.filter(r => r.id !== res.id));
+      setMessage({ type: 'success', text: '삭제 완료' });
+      return;
+    }
+
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'space_reservations', res.id));
+      await deleteDoc(doc(db, 'space_reservations', res.id));
       setMessage({ type: 'success', text: '삭제 완료' });
     } catch (error) {
       console.error(error);
@@ -373,13 +440,6 @@ export default function App() {
 
   const canDelete = (res) => (user && res.userId === user.uid) || adminMode;
 
-  if (authError) return (
-    <div className="flex flex-col items-center justify-center min-h-screen p-6 text-center bg-slate-100">
-      <AlertCircle className="text-red-500 mb-4" size={48} />
-      <p className="font-bold text-slate-700">인증 실패</p>
-      <p className="text-sm text-slate-500 mt-2">네트워크 또는 Firebase 설정을 확인하세요.</p>
-    </div>
-  );
   if (loading) return <div className="flex items-center justify-center min-h-screen font-semibold text-slate-600">데이터 동기화 중...</div>;
 
   const prevMonth = () => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1));
@@ -387,18 +447,18 @@ export default function App() {
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();
-  const firstDay = new Date(year, month, 1).getDay();
+  const firstDay = new Date(year, month, 1).getDay(); // 0(일) ~ 6(토)
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const blankCount = (firstDay === 0 || firstDay === 6) ? 0 : firstDay - 1;
-  const blanks = Array(Math.max(0, blankCount)).fill(null);
-  const weekdays = Array.from({ length: daysInMonth }, (_, i) => i + 1).filter(d => {
-    const day = new Date(year, month, d).getDay();
-    return day !== 0 && day !== 6;
-  });
+  
+  // 달력이 일요일부터 시작하도록 빈칸 배열 생성
+  const blanks = Array(firstDay).fill(null);
+  
+  // 전체 날짜 배열 (주말 포함)
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
   return (
     <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-[1600px] mx-auto space-y-6"> {/* 너비 확장 max-w-6xl -> max-w-[1600px] */}
         <header className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex justify-between items-start gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -427,8 +487,9 @@ export default function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="space-y-6">
+        {/* 좌측 패널(등록, 일일 현황)과 우측 패널(달력) 비율 설정 */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          <div className="space-y-6 xl:col-span-4"> {/* 좌측 4/12 비율 */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit">
               <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-800">신규 등록</h2>
               <form onSubmit={handleSubmit} className="space-y-4">
@@ -449,7 +510,7 @@ export default function App() {
                       )}
                     </div>
                     <div>
-                      <label className="text-sm font-bold text-slate-600 block mb-1">장소/분류</label>
+                      <label className="text-sm font-bold text-slate-600 block mb-1">분류</label>
                       <select value={resource} onChange={(e) => { setResource(e.target.value); setActiveTab(e.target.value); setTimes([]); }} className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
                         {RESOURCES.map(r => <option key={r} value={r}>{r}</option>)}
                       </select>
@@ -695,7 +756,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <div className="xl:col-span-8 bg-white p-6 rounded-xl shadow-sm border border-slate-200"> {/* 우측 8/12 비율 */}
             <div className="flex justify-between items-center mb-4 overflow-x-auto">
               <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border border-slate-200 shrink-0 mr-4">
                 <button onClick={prevMonth} className="p-1 hover:bg-white rounded transition-colors" aria-label="이전 달"><ChevronLeft size={20} className="text-slate-600" /></button>
@@ -712,19 +773,28 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-5 gap-px bg-slate-200 rounded-lg overflow-hidden border border-slate-200">
-              {['월', '화', '수', '목', '금'].map(d => <div key={d} className="bg-slate-50 py-2 text-center text-sm font-bold text-slate-600">{d}</div>)}
+            {/* 달력 그리드 7일로 변경 */}
+            <div className="grid grid-cols-7 gap-px bg-slate-200 rounded-lg overflow-hidden border border-slate-200">
+              {['일', '월', '화', '수', '목', '금', '토'].map((d, index) => (
+                <div key={d} className={`bg-slate-50 py-2 text-center text-sm font-bold ${index === 0 ? 'text-red-600' : index === 6 ? 'text-blue-600' : 'text-slate-600'}`}>
+                  {d}
+                </div>
+              ))}
               {blanks.map((_, i) => <div key={`blank-${i}`} className="bg-white min-h-[120px]"></div>)}
-              {weekdays.map(d => {
+              {days.map(d => {
                 const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                 const items = reservations.filter(r => r.date === dateStr && r.resource === activeTab);
                 const isSelected = date === dateStr;
                 const isToday = todayStr === dateStr;
+                const currentDayOfWeek = new Date(year, month, d).getDay();
+                const isSunday = currentDayOfWeek === 0;
+                const isSaturday = currentDayOfWeek === 6;
 
                 return (
                   <div key={d} onClick={() => { setDate(dateStr); setTimes([]); if (resource !== activeTab) setResource(activeTab); }}
                     className={`bg-white min-h-[140px] p-2 border-t border-slate-100 cursor-pointer transition-colors hover:bg-blue-50/30 ${isSelected ? 'ring-2 ring-inset ring-blue-500 bg-blue-50/30' : ''}`}>
-                    <div className={`text-sm font-bold w-7 h-7 flex items-center justify-center rounded-lg mb-2 transition-colors ${isToday ? 'bg-blue-600 text-white' : isSelected ? 'text-blue-600' : 'text-slate-700'}`}>
+                    <div className={`text-sm font-bold w-7 h-7 flex items-center justify-center rounded-lg mb-2 transition-colors 
+                      ${isToday ? 'bg-blue-600 text-white' : isSelected ? 'text-blue-600' : isSunday ? 'text-red-600' : isSaturday ? 'text-blue-600' : 'text-slate-700'}`}>
                       {d}
                     </div>
                     <div className="space-y-1.5 overflow-y-auto max-h-[100px]">
