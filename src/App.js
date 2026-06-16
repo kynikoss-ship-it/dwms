@@ -7,11 +7,6 @@ import {
   serverTimestamp, runTransaction
 } from 'firebase/firestore';
 
-/* global __firebase_config, __app_id */
-
-// Canvas 미리보기 환경 여부 확인
-const IS_CANVAS = typeof __firebase_config !== 'undefined' || typeof __app_id !== 'undefined';
-
 // --- Firebase Initialization ---
 const firebaseConfig = {
   apiKey: "AIzaSyAgDV2hh7m4j22EiZfgZXSVVdChgh_G00Y",
@@ -24,24 +19,21 @@ const firebaseConfig = {
 };
 
 let app, auth, db;
-if (!IS_CANVAS) {
-  try {
-    app = initializeApp(firebaseConfig);
-    auth = getAuth(app);
-    db = getFirestore(app);
-  } catch (error) {
-    console.error("Firebase Initialization Error:", error);
-  }
+try {
+  app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  db = getFirestore(app);
+} catch (error) {
+  console.error("Firebase Initialization Error:", error);
 }
 
-// (#요청사항) 이름 및 목록 탭 변경
+// 탭 및 리소스 설정
 const EVENT_RESOURCE = '행사(학생, 교직원)';
 const VISITOR_RESOURCE = '외부 방문자';
 const RESOURCES = [EVENT_RESOURCE, VISITOR_RESOURCE, '2층 도서관', '4층 미래교실'];
 
 const EVENT_GRADES = ['1', '2', '3', '기타'];
 const TIME_SLOTS = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시', '방과후'];
-// (#요청사항) 외부 방문자용 30분 간격 시간대
 const VISITOR_TIME_SLOTS = [
   '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
   '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00',
@@ -55,7 +47,7 @@ for (let grade = 1; grade <= 3; grade++) {
   }
 }
 
-// 관리자 비밀번호 (배포 시 환경변수로 분리 권장)
+// 관리자 비밀번호
 const ADMIN_PASSCODE = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_ADMIN_PASSCODE) 
   ? process.env.REACT_APP_ADMIN_PASSCODE 
   : '3328';
@@ -82,11 +74,29 @@ const formatGrades = (grades, etcText) => {
   return parts.join(', ');
 };
 
-const statusBadge = (res) => {
-  if (res.isUnavailable) return <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-700">불가</span>;
-  if (res.isVisitor) return <span className="px-2 py-0.5 rounded text-xs font-bold bg-green-100 text-green-700">방문</span>;
-  if (res.isEvent) return <span className="px-2 py-0.5 rounded text-xs font-bold bg-purple-100 text-purple-700">행사</span>;
-  return <span className="px-2 py-0.5 rounded text-xs font-bold bg-blue-100 text-blue-700">예약</span>;
+// 동적 색상 매핑 함수
+const getThemeClasses = (res) => {
+  if (res.isUnavailable) return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', badgeBg: 'bg-red-100', label: '불가' };
+  if (res.isVisitor) return { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', badgeBg: 'bg-green-100', label: '방문' };
+  
+  if (res.isEvent) {
+    if (res.isEventStudent && res.isEventStaff) return { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', badgeBg: 'bg-purple-100', label: '행사(통합)' };
+    if (res.isEventStudent) return { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', badgeBg: 'bg-amber-100', label: '행사(학생)' };
+    if (res.isEventStaff) return { bg: 'bg-teal-50', border: 'border-teal-200', text: 'text-teal-700', badgeBg: 'bg-teal-100', label: '행사(교직원)' };
+    return { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', badgeBg: 'bg-purple-100', label: '행사' };
+  }
+
+  // 일반 예약 (도서관, 미래교실)
+  if (res.targetClass?.startsWith('1학년')) return { bg: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-700', badgeBg: 'bg-rose-100', label: '예약(1학년)' };
+  if (res.targetClass?.startsWith('2학년')) return { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', badgeBg: 'bg-indigo-100', label: '예약(2학년)' };
+  if (res.targetClass?.startsWith('3학년')) return { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', badgeBg: 'bg-blue-100', label: '예약(3학년)' };
+  
+  return { bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-700', badgeBg: 'bg-slate-200', label: '예약' };
+};
+
+const StatusBadge = ({ res }) => {
+  const theme = getThemeClasses(res);
+  return <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${theme.badgeBg} ${theme.text}`}>{theme.label}</span>;
 };
 
 const DetailRow = ({ label, value }) => (
@@ -135,35 +145,36 @@ export default function App() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [activeTab, setActiveTab] = useState(RESOURCES[0]);
 
-  // 상단 신규 등록 폼 기준 속성
   const isEvent = resource === EVENT_RESOURCE;
   const isVisitor = resource === VISITOR_RESOURCE;
   const currentSlots = isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
-
-  // 하단 일일 현황 테이블 기준 속성
   const isTabVisitor = activeTab === VISITOR_RESOURCE;
 
   useEffect(() => {
-    if (IS_CANVAS) {
-      // Canvas(미리보기) 환경: 로컬 테스트 모드로 전환 (Firebase 연결 안 함)
-      setUser({ uid: 'local-test-user' });
-      setLoading(false);
-      return;
-    }
-
-    // 실제 프로덕션(로컬) 환경: Firebase 연결
     if (!auth) { setLoading(false); return; }
 
-    signInAnonymously(auth).catch((err) => {
-      console.warn("익명 로그인 알림 (권한 설정에 따라 무시 가능):", err);
-    });
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (err) {
+        console.warn("익명 로그인 알림:", err);
+        // 오류 시 일단 세션을 부여하여 진행 (권한 에러는 날 수 있음)
+        setUser({ uid: 'local-session-user' });
+      }
+    };
+    initAuth();
 
     const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
-      setUser(u || { uid: 'local-session-user' }); 
-      setLoading(false);
+      if (u) {
+        setUser(u); 
+      }
     });
 
-    if (!db) return;
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!db || !user) return; // 사용자 인증이 완료될 때까지 기다림
     
     const reservationsRef = collection(db, 'space_reservations');
     const unsubscribeDB = onSnapshot(reservationsRef, (snapshot) => {
@@ -184,11 +195,8 @@ export default function App() {
       setLoading(false);
     });
 
-    return () => {
-      unsubscribeAuth();
-      if (unsubscribeDB) unsubscribeDB();
-    };
-  }, []);
+    return () => unsubscribeDB();
+  }, [user]);
 
   useEffect(() => {
     if (message.text) {
@@ -261,77 +269,6 @@ export default function App() {
       return;
     }
 
-    // --- Canvas(미리보기) 전용 인메모리 로직 ---
-    if (IS_CANVAS) {
-      const conflicts = targetSlots.filter(slot => 
-        reservations.some(r => r.date === date && r.resource === resource && r.time === slot)
-      );
-
-      if (conflicts.length === targetSlots.length) {
-        setMessage({ type: 'error', text: '선택한 시간이 이미 예약되었습니다.' });
-        setIsSubmitting(false);
-        return;
-      }
-
-      const successfulSlots = targetSlots.filter(slot => !conflicts.includes(slot));
-      const newItems = successfulSlots.map(slot => ({
-        id: makeSlotId(date, resource, slot),
-        date, resource, time: slot,
-        userName: isUnavailable ? unavailableReason.trim() : (isVisitor ? visitorName.trim() : userName.trim()),
-        targetClass: (isUnavailable || isEvent || isVisitor) ? '' : targetClass,
-        isUnavailable, isEvent, isVisitor,
-        eventName: (isEvent && !isUnavailable) ? eventName.trim() : '',
-        targetGrades: (isEvent && !isUnavailable && isEventStudent) ? targetGrades : [],
-        targetGradesEtc: (isEvent && !isUnavailable && isEventStudent && targetGrades.includes('기타')) ? etcTarget.trim() : '',
-        isEventStudent: isEvent ? isEventStudent : false,
-        isEventStaff: isEvent ? isEventStaff : false,
-        visitorContact: isVisitor ? visitorContact.trim() : '',
-        purpose: isVisitor ? purpose.trim() : '',
-        hostName: isVisitor ? hostName.trim() : '',
-        hostContact: isVisitor ? hostContact.trim() : '',
-        createdAt: new Date(),
-        userId: user?.uid || 'anonymous',
-      }));
-
-      setReservations(prev => {
-        const updated = [...prev, ...newItems];
-        updated.sort((a, b) => {
-          if (a.date === b.date) {
-              const aSlots = a.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
-              const bSlots = b.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
-              return Math.max(0, aSlots.indexOf(a.time)) - Math.max(0, bSlots.indexOf(b.time));
-          }
-          return a.date > b.date ? 1 : -1;
-        });
-        return updated;
-      });
-
-      if (conflicts.length > 0) {
-        setMessage({ type: 'success', text: `일부 등록됨 — 충돌: ${conflicts.join(', ')}` });
-      } else {
-        setMessage({ type: 'success', text: isUnavailable ? '예약 불가 설정 완료' : (isEvent ? '행사 등록 완료' : isVisitor ? '방문자 등록 완료' : '예약 등록 완료') });
-      }
-
-      setTimes([]);
-      setIsAllDay(false);
-      setUnavailableReason('');
-      if (!isUnavailable) {
-        setTargetClass(CLASSES[0]);
-        setEventName('');
-        setTargetGrades([]);
-        setEtcTarget('');
-        setVisitorName('');
-        setVisitorContact('');
-        setPurpose('');
-        setHostName('');
-        setHostContact('');
-        setUserName('');
-      }
-      setIsSubmitting(false);
-      return;
-    }
-
-    // --- 프로덕션 전용 Firebase 로직 ---
     try {
       const reservationsRef = collection(db, 'space_reservations');
       const conflicts = [];
@@ -407,12 +344,6 @@ export default function App() {
     }
     if (!window.confirm('정말 삭제하시겠습니까?')) return;
 
-    if (IS_CANVAS) {
-      setReservations(prev => prev.filter(r => r.id !== res.id));
-      setMessage({ type: 'success', text: '삭제 완료' });
-      return;
-    }
-
     try {
       await deleteDoc(doc(db, 'space_reservations', res.id));
       setMessage({ type: 'success', text: '삭제 완료' });
@@ -450,15 +381,12 @@ export default function App() {
   const firstDay = new Date(year, month, 1).getDay(); // 0(일) ~ 6(토)
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   
-  // 달력이 일요일부터 시작하도록 빈칸 배열 생성
   const blanks = Array(firstDay).fill(null);
-  
-  // 전체 날짜 배열 (주말 포함)
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
   return (
     <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
-      <div className="max-w-[1600px] mx-auto space-y-6"> {/* 너비 확장 max-w-6xl -> max-w-[1600px] */}
+      <div className="max-w-[1600px] mx-auto space-y-6">
         <header className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex justify-between items-start gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -487,9 +415,9 @@ export default function App() {
           </div>
         )}
 
-        {/* 좌측 패널(등록, 일일 현황)과 우측 패널(달력) 비율 설정 */}
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-          <div className="space-y-6 xl:col-span-4"> {/* 좌측 4/12 비율 */}
+          <div className="space-y-6 xl:col-span-4">
+            {/* --- 신규 등록 패널 --- */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit">
               <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-800">신규 등록</h2>
               <form onSubmit={handleSubmit} className="space-y-4">
@@ -587,11 +515,11 @@ export default function App() {
                         <div className="flex gap-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
                             <label className="flex items-center gap-2 cursor-pointer">
                                 <input type="checkbox" checked={isEventStudent} onChange={(e) => setIsEventStudent(e.target.checked)} className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500" />
-                                <span className="text-sm font-bold text-slate-700">학생 대상 행사</span>
+                                <span className="text-sm font-bold text-slate-700">학생 대상</span>
                             </label>
                             <label className="flex items-center gap-2 cursor-pointer">
                                 <input type="checkbox" checked={isEventStaff} onChange={(e) => setIsEventStaff(e.target.checked)} className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500" />
-                                <span className="text-sm font-bold text-slate-700">교직원 대상 행사</span>
+                                <span className="text-sm font-bold text-slate-700">교직원 대상</span>
                             </label>
                         </div>
                         {isEventStudent && (
@@ -659,6 +587,7 @@ export default function App() {
               </form>
             </div>
 
+            {/* --- 일일 현황 패널 --- */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
               <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-800 flex justify-between items-end">
                 <span>일일 현황</span>
@@ -669,7 +598,7 @@ export default function App() {
                   <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                     <tr>
                       <th className="px-3 py-2 text-center w-16">{isTabVisitor ? '시간' : '교시'}</th>
-                      <th className="px-3 py-2 text-center w-14">상태</th>
+                      <th className="px-3 py-2 text-center w-16">상태</th>
                       <th className="px-3 py-2">{isTabVisitor ? '방문자(목적)' : '예약자(사유)'}</th>
                       <th className="px-3 py-2 text-center w-10">관리</th>
                     </tr>
@@ -677,76 +606,44 @@ export default function App() {
                   <tbody>
                     {(isTabVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS).map(slot => {
                       const res = dailyReservations[slot];
+                      if (!res) {
+                        return (
+                          <tr key={slot} className="border-b last:border-0 border-slate-100">
+                            <td className="px-3 py-2 text-center font-bold text-slate-600 bg-slate-50 border-r border-slate-100">{slot}</td>
+                            <td className="px-3 py-2 text-center"><span className="text-[11px] text-slate-400">가능</span></td>
+                            <td className="px-3 py-2 text-slate-400">-</td>
+                            <td className="px-3 py-2"></td>
+                          </tr>
+                        );
+                      }
+                      
+                      const theme = getThemeClasses(res);
                       return (
                         <tr
                           key={slot}
-                          onClick={res ? () => setDetailRes(res) : undefined}
-                          className={`border-b last:border-0 border-slate-100 hover:bg-slate-50 transition-colors ${res ? 'cursor-pointer' : ''}`}
+                          onClick={() => setDetailRes(res)}
+                          className="border-b last:border-0 border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer"
                         >
                           <td className="px-3 py-2 text-center font-bold text-slate-600 bg-slate-50 border-r border-slate-100">{slot}</td>
-                          {res ? (
-                            res.isUnavailable ? (
-                              <>
-                                <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-red-100 text-red-700">불가</span></td>
-                                <td className="px-3 py-2 text-red-700 font-bold truncate max-w-[120px]" title={res.userName}>{res.userName}</td>
-                                <td className="px-3 py-2 text-center">
-                                  {canDelete(res) && (
-                                    <button onClick={(e) => { e.stopPropagation(); handleDelete(res); }} aria-label="삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
-                                  )}
-                                </td>
-                              </>
-                            ) : res.isVisitor ? (
-                              <>
-                                <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-green-100 text-green-700">방문</span></td>
-                                <td className="px-3 py-2 text-slate-800 font-medium truncate max-w-[120px]" title={`${res.userName} (${res.purpose})`}>
-                                  {res.userName}
-                                  <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.purpose})</span>
-                                </td>
-                                <td className="px-3 py-2 text-center">
-                                  {canDelete(res) && (
-                                    <button onClick={(e) => { e.stopPropagation(); handleDelete(res); }} aria-label="삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
-                                  )}
-                                </td>
-                              </>
-                            ) : res.isEvent ? (
-                              <>
-                                <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-purple-100 text-purple-700">행사</span></td>
-                                <td className="px-3 py-2 text-slate-800 font-medium truncate max-w-[120px]" title={`${res.eventName} (${res.userName})${res.isEventStudent && res.targetGrades?.length ? ' · ' + formatGrades(res.targetGrades, res.targetGradesEtc) : ''}`}>
-                                  {res.eventName}
-                                  <span className="ml-1 text-slate-500 text-[11px] font-normal">
-                                    ({res.userName}
-                                    {res.isEventStaff && !res.isEventStudent ? ' · 교직원' : ''}
-                                    {res.isEventStaff && res.isEventStudent ? ' · 교직원' : ''}
-                                    {res.isEventStudent && res.targetGrades?.length ? ` · ${formatGrades(res.targetGrades, res.targetGradesEtc)}` : ''})
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2 text-center">
-                                  {canDelete(res) && (
-                                    <button onClick={(e) => { e.stopPropagation(); handleDelete(res); }} aria-label="삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
-                                  )}
-                                </td>
-                              </>
-                            ) : (
-                              <>
-                                <td className="px-3 py-2 text-center"><span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-blue-100 text-blue-700">예약</span></td>
-                                <td className="px-3 py-2 text-slate-800 font-medium truncate max-w-[120px]" title={`${res.userName} ${res.targetClass !== '선택 안함' ? `(${res.targetClass})` : ''}`}>
-                                  {res.userName}
-                                  {res.targetClass !== '선택 안함' && <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.targetClass})</span>}
-                                </td>
-                                <td className="px-3 py-2 text-center">
-                                  {canDelete(res) && (
-                                    <button onClick={(e) => { e.stopPropagation(); handleDelete(res); }} aria-label="삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
-                                  )}
-                                </td>
-                              </>
-                            )
-                          ) : (
-                            <>
-                              <td className="px-3 py-2 text-center"><span className="text-[11px] text-slate-400">가능</span></td>
-                              <td className="px-3 py-2 text-slate-400">-</td>
-                              <td className="px-3 py-2"></td>
-                            </>
-                          )}
+                          <td className="px-3 py-2 text-center"><StatusBadge res={res} /></td>
+                          <td className={`px-3 py-2 font-medium truncate max-w-[120px] ${theme.text}`} title={
+                            res.isUnavailable ? res.userName
+                            : res.isVisitor ? `${res.userName} (${res.purpose})`
+                            : res.isEvent ? `${res.eventName} (${res.userName})`
+                            : `${res.userName} ${res.targetClass !== '선택 안함' ? `(${res.targetClass})` : ''}`
+                          }>
+                            {res.isUnavailable ? res.userName 
+                            : res.isVisitor ? <>{res.userName} <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.purpose})</span></>
+                            : res.isEvent ? <>{res.eventName} <span className="ml-1 text-slate-500 text-[11px] font-normal">
+                                ({res.userName}{res.isEventStaff && !res.isEventStudent ? ' · 교직원' : ''}{res.isEventStaff && res.isEventStudent ? ' · 교직원' : ''}{res.isEventStudent && res.targetGrades?.length ? ` · ${formatGrades(res.targetGrades, res.targetGradesEtc)}` : ''})
+                              </span></>
+                            : <>{res.userName} {res.targetClass !== '선택 안함' && <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.targetClass})</span>}</>}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            {canDelete(res) && (
+                              <button onClick={(e) => { e.stopPropagation(); handleDelete(res); }} aria-label="삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
@@ -756,7 +653,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className="xl:col-span-8 bg-white p-6 rounded-xl shadow-sm border border-slate-200"> {/* 우측 8/12 비율 */}
+          {/* --- 달력 패널 --- */}
+          <div className="xl:col-span-8 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
             <div className="flex justify-between items-center mb-4 overflow-x-auto">
               <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border border-slate-200 shrink-0 mr-4">
                 <button onClick={prevMonth} className="p-1 hover:bg-white rounded transition-colors" aria-label="이전 달"><ChevronLeft size={20} className="text-slate-600" /></button>
@@ -773,7 +671,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* 달력 그리드 7일로 변경 */}
             <div className="grid grid-cols-7 gap-px bg-slate-200 rounded-lg overflow-hidden border border-slate-200">
               {['일', '월', '화', '수', '목', '금', '토'].map((d, index) => (
                 <div key={d} className={`bg-slate-50 py-2 text-center text-sm font-bold ${index === 0 ? 'text-red-600' : index === 6 ? 'text-blue-600' : 'text-slate-600'}`}>
@@ -798,25 +695,23 @@ export default function App() {
                       {d}
                     </div>
                     <div className="space-y-1.5 overflow-y-auto max-h-[100px]">
-                      {items.map(res => (
+                      {items.map(res => {
+                        const theme = getThemeClasses(res);
+                        return (
                         <div key={res.id}
                           onClick={(e) => { e.stopPropagation(); setDetailRes(res); }}
                           title="클릭하여 상세 보기"
-                          className={`text-[11px] p-2 rounded-lg border group relative flex flex-col gap-0.5 leading-tight cursor-pointer hover:ring-2 hover:ring-blue-400 transition-shadow ${
-                          res.isUnavailable ? 'bg-red-50 border-red-200 text-red-700'
-                          : res.isVisitor ? 'bg-green-50 border-green-200 text-green-800'
-                          : res.isEvent ? 'bg-purple-50 border-purple-200 text-purple-800'
-                          : 'bg-slate-50 border-slate-200 text-slate-800'}`}>
+                          className={`text-[11px] p-2 rounded-lg border group relative flex flex-col gap-0.5 leading-tight cursor-pointer hover:ring-2 hover:ring-blue-400 transition-shadow ${theme.bg} ${theme.border} ${theme.text}`}>
                           <div className="flex items-center gap-1 truncate">
-                            <span className={`font-black shrink-0 ${res.isUnavailable ? 'text-red-700' : res.isVisitor ? 'text-green-700' : res.isEvent ? 'text-purple-700' : 'text-blue-700'}`}>{res.time}</span>
+                            <span className={`font-black shrink-0 ${theme.text}`}>{res.time}</span>
                             {!res.isUnavailable && res.isVisitor && res.purpose && (
-                              <span className="text-slate-500 font-bold truncate">| {res.purpose}</span>
+                              <span className="opacity-70 font-bold truncate">| {res.purpose}</span>
                             )}
                             {!res.isUnavailable && res.isEvent && res.isEventStudent && res.targetGrades?.length > 0 && (
-                              <span className="text-slate-500 font-bold truncate">| {formatGrades(res.targetGrades, res.targetGradesEtc)}</span>
+                              <span className="opacity-70 font-bold truncate">| {formatGrades(res.targetGrades, res.targetGradesEtc)}</span>
                             )}
                             {!res.isUnavailable && !res.isEvent && !res.isVisitor && res.targetClass && res.targetClass !== '선택 안함' && (
-                              <span className="text-slate-500 font-bold truncate">| {res.targetClass}</span>
+                              <span className="opacity-70 font-bold truncate">| {res.targetClass}</span>
                             )}
                           </div>
                           <span className="font-bold truncate">
@@ -827,7 +722,7 @@ export default function App() {
                                 : res.userName}
                           </span>
                         </div>
-                      ))}
+                      )})}
                     </div>
                   </div>
                 );
@@ -837,12 +732,13 @@ export default function App() {
         </div>
       </div>
 
+      {/* --- 상세 정보 모달 --- */}
       {detailRes && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setDetailRes(null)}>
           <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 relative" onClick={(e) => e.stopPropagation()}>
             <button onClick={() => setDetailRes(null)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-700" aria-label="닫기"><X size={20} /></button>
             <div className="flex items-center gap-2 mb-5 pr-8">
-              {statusBadge(detailRes)}
+              <StatusBadge res={detailRes} />
               <h3 className="text-xl font-bold text-slate-800 break-keep">
                 {detailRes.isUnavailable ? '예약 불가' : detailRes.isEvent ? detailRes.eventName : detailRes.userName}
               </h3>
