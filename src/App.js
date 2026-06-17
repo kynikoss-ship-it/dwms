@@ -32,6 +32,9 @@ const EVENT_RESOURCE = '행사(학생, 교직원)';
 const VISITOR_RESOURCE = '외부 방문자';
 const RESOURCES = [EVENT_RESOURCE, VISITOR_RESOURCE, '2층 도서관', '4층 미래교실'];
 
+// 동일 시간대 중복 등록을 허용하는 분류 (행사/방문자는 같은 시간에 여러 건 발생 가능)
+const MULTI_BOOKING_RESOURCES = [EVENT_RESOURCE, VISITOR_RESOURCE];
+
 const EVENT_GRADES = ['1', '2', '3', '기타'];
 const TIME_SLOTS = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시', '방과후'];
 const VISITOR_TIME_SLOTS = [
@@ -60,8 +63,18 @@ const getLocalDateString = (d = new Date()) => {
   return `${y}-${m}-${day}`;
 };
 
+const isMultiBookingResource = (res) => MULTI_BOOKING_RESOURCES.includes(res);
+
+// 도서관/미래교실: 기존과 동일한 고정 슬롯 ID (시간당 1건, 기존 데이터와 완전히 동일한 패턴)
 const makeSlotId = (date, resource, time) =>
   `${date}__${resource.replace(/\//g, '_')}__${time}`;
+
+// 행사/방문자: 고유값을 덧붙여 같은 시간대에 여러 문서가 동시에 존재 가능하도록 함
+// (기존 makeSlotId 패턴 뒤에 __고유ID 만 추가되는 구조라 기존 단일 데이터와 충돌하지 않음)
+const makeUniqueSlotId = (date, resource, time) => {
+  const uniquePart = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return `${makeSlotId(date, resource, time)}__${uniquePart}`;
+};
 
 const formatGrades = (grades, etcText) => {
   if (!Array.isArray(grades) || grades.length === 0) return '';
@@ -149,6 +162,7 @@ export default function App() {
   const isVisitor = resource === VISITOR_RESOURCE;
   const currentSlots = isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
   const isTabVisitor = activeTab === VISITOR_RESOURCE;
+  const allowsMultiBooking = isMultiBookingResource(resource);
 
   useEffect(() => {
     if (!auth) { setLoading(false); return; }
@@ -183,7 +197,12 @@ export default function App() {
         if (a.date === b.date) {
             const aSlots = a.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
             const bSlots = b.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
-            return Math.max(0, aSlots.indexOf(a.time)) - Math.max(0, bSlots.indexOf(b.time));
+            const slotDiff = Math.max(0, aSlots.indexOf(a.time)) - Math.max(0, bSlots.indexOf(b.time));
+            if (slotDiff !== 0) return slotDiff;
+            // 같은 시간대 내에서는 등록 순서(생성 시각)대로 정렬
+            const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+            const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+            return aTime - bTime;
         }
         return a.date > b.date ? 1 : -1;
       });
@@ -205,16 +224,23 @@ export default function App() {
     }
   }, [message]);
 
+  // 행사/방문자는 같은 시간대에 여러 건이 가능하므로 "예약됨"으로 막지 않음.
+  // 도서관/미래교실만 시간당 1건 제한을 위해 막힌 슬롯을 계산.
   const bookedTimeSlots = useMemo(() => {
+    if (allowsMultiBooking) return [];
     return reservations
       .filter(r => r.date === date && r.resource === resource)
       .map(r => r.time);
-  }, [reservations, date, resource]);
+  }, [reservations, date, resource, allowsMultiBooking]);
 
-  const dailyReservations = useMemo(() => {
+  // 시간(slot) -> 해당 슬롯의 예약 배열로 매핑 (같은 시간대에 여러 건 표시 가능)
+  const dailyReservationsBySlot = useMemo(() => {
     const daily = reservations.filter(r => r.date === date && r.resource === activeTab);
     const map = {};
-    daily.forEach(r => { map[r.time] = r; });
+    daily.forEach(r => {
+      if (!map[r.time]) map[r.time] = [];
+      map[r.time].push(r);
+    });
     return map;
   }, [reservations, date, activeTab]);
 
@@ -273,35 +299,47 @@ export default function App() {
       const reservationsRef = collection(db, 'space_reservations');
       const conflicts = [];
       for (const slot of targetSlots) {
-        const slotId = makeSlotId(date, resource, slot);
-        const slotRef = doc(reservationsRef, slotId);
-        try {
+        const docData = {
+          date, resource, time: slot,
+          userName: isUnavailable ? unavailableReason.trim() : (isVisitor ? visitorName.trim() : userName.trim()),
+          targetClass: (isUnavailable || isEvent || isVisitor) ? '' : targetClass,
+          isUnavailable,
+          isEvent,
+          isVisitor,
+          eventName: (isEvent && !isUnavailable) ? eventName.trim() : '',
+          targetGrades: (isEvent && !isUnavailable && isEventStudent) ? targetGrades : [],
+          targetGradesEtc: (isEvent && !isUnavailable && isEventStudent && targetGrades.includes('기타')) ? etcTarget.trim() : '',
+          isEventStudent: isEvent ? isEventStudent : false,
+          isEventStaff: isEvent ? isEventStaff : false,
+          visitorContact: isVisitor ? visitorContact.trim() : '',
+          purpose: isVisitor ? purpose.trim() : '',
+          hostName: isVisitor ? hostName.trim() : '',
+          hostContact: isVisitor ? hostContact.trim() : '',
+          createdAt: serverTimestamp(),
+          userId: user?.uid || 'anonymous',
+        };
+
+        if (allowsMultiBooking && !isUnavailable) {
+          // 행사/방문자(불가 설정 제외): 고유 ID로 생성 — 같은 시간대 중복 등록 허용, 충돌 체크 없이 바로 추가
+          const slotId = makeUniqueSlotId(date, resource, slot);
+          const slotRef = doc(reservationsRef, slotId);
           await runTransaction(db, async (tx) => {
-            const snap = await tx.get(slotRef);
-            if (snap.exists()) throw new Error('SLOT_TAKEN');
-            tx.set(slotRef, {
-              date, resource, time: slot,
-              userName: isUnavailable ? unavailableReason.trim() : (isVisitor ? visitorName.trim() : userName.trim()),
-              targetClass: (isUnavailable || isEvent || isVisitor) ? '' : targetClass,
-              isUnavailable,
-              isEvent,
-              isVisitor,
-              eventName: (isEvent && !isUnavailable) ? eventName.trim() : '',
-              targetGrades: (isEvent && !isUnavailable && isEventStudent) ? targetGrades : [],
-              targetGradesEtc: (isEvent && !isUnavailable && isEventStudent && targetGrades.includes('기타')) ? etcTarget.trim() : '',
-              isEventStudent: isEvent ? isEventStudent : false,
-              isEventStaff: isEvent ? isEventStaff : false,
-              visitorContact: isVisitor ? visitorContact.trim() : '',
-              purpose: isVisitor ? purpose.trim() : '',
-              hostName: isVisitor ? hostName.trim() : '',
-              hostContact: isVisitor ? hostContact.trim() : '',
-              createdAt: serverTimestamp(),
-              userId: user?.uid || 'anonymous',
-            });
+            tx.set(slotRef, docData);
           });
-        } catch (err) {
-          if (err.message === 'SLOT_TAKEN') conflicts.push(slot);
-          else throw err;
+        } else {
+          // 도서관/미래교실, 그리고 행사/방문자의 '사용 불가' 설정: 기존과 동일하게 시간당 1건 제한
+          const slotId = makeSlotId(date, resource, slot);
+          const slotRef = doc(reservationsRef, slotId);
+          try {
+            await runTransaction(db, async (tx) => {
+              const snap = await tx.get(slotRef);
+              if (snap.exists()) throw new Error('SLOT_TAKEN');
+              tx.set(slotRef, docData);
+            });
+          } catch (err) {
+            if (err.message === 'SLOT_TAKEN') conflicts.push(slot);
+            else throw err;
+          }
         }
       }
 
@@ -444,6 +482,12 @@ export default function App() {
                       </select>
                     </div>
                 </div>
+
+                {allowsMultiBooking && !isUnavailable && (
+                  <p className="text-[11px] text-blue-700 font-bold bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                    ℹ 이 분류는 같은 시간대에 여러 건 동시 등록이 가능합니다.
+                  </p>
+                )}
 
                 {!isAllDay && (
                   <div>
@@ -605,8 +649,8 @@ export default function App() {
                   </thead>
                   <tbody>
                     {(isTabVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS).map(slot => {
-                      const res = dailyReservations[slot];
-                      if (!res) {
+                      const slotResList = dailyReservationsBySlot[slot];
+                      if (!slotResList || slotResList.length === 0) {
                         return (
                           <tr key={slot} className="border-b last:border-0 border-slate-100">
                             <td className="px-3 py-2 text-center font-bold text-slate-600 bg-slate-50 border-r border-slate-100">{slot}</td>
@@ -616,36 +660,41 @@ export default function App() {
                           </tr>
                         );
                       }
-                      
-                      const theme = getThemeClasses(res);
-                      return (
-                        <tr
-                          key={slot}
-                          onClick={() => setDetailRes(res)}
-                          className="border-b last:border-0 border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer"
-                        >
-                          <td className="px-3 py-2 text-center font-bold text-slate-600 bg-slate-50 border-r border-slate-100">{slot}</td>
-                          <td className="px-3 py-2 text-center"><StatusBadge res={res} /></td>
-                          <td className={`px-3 py-2 font-medium truncate max-w-[120px] ${theme.text}`} title={
-                            res.isUnavailable ? res.userName
-                            : res.isVisitor ? `${res.userName} (${res.purpose})`
-                            : res.isEvent ? `${res.eventName} (${res.userName})`
-                            : `${res.userName} ${res.targetClass !== '선택 안함' ? `(${res.targetClass})` : ''}`
-                          }>
-                            {res.isUnavailable ? res.userName 
-                            : res.isVisitor ? <>{res.userName} <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.purpose})</span></>
-                            : res.isEvent ? <>{res.eventName} <span className="ml-1 text-slate-500 text-[11px] font-normal">
-                                ({res.userName}{res.isEventStaff && !res.isEventStudent ? ' · 교직원' : ''}{res.isEventStaff && res.isEventStudent ? ' · 교직원' : ''}{res.isEventStudent && res.targetGrades?.length ? ` · ${formatGrades(res.targetGrades, res.targetGradesEtc)}` : ''})
-                              </span></>
-                            : <>{res.userName} {res.targetClass !== '선택 안함' && <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.targetClass})</span>}</>}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            {canDelete(res) && (
-                              <button onClick={(e) => { e.stopPropagation(); handleDelete(res); }} aria-label="삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
-                            )}
-                          </td>
-                        </tr>
-                      );
+
+                      // 같은 시간대에 여러 건이 있으면 행을 여러 줄로 나누어 표시
+                      return slotResList.map((res, idx) => {
+                        const theme = getThemeClasses(res);
+                        return (
+                          <tr
+                            key={res.id}
+                            onClick={() => setDetailRes(res)}
+                            className="border-b last:border-0 border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer"
+                          >
+                            <td className="px-3 py-2 text-center font-bold text-slate-600 bg-slate-50 border-r border-slate-100">
+                              {idx === 0 ? slot : ''}
+                            </td>
+                            <td className="px-3 py-2 text-center"><StatusBadge res={res} /></td>
+                            <td className={`px-3 py-2 font-medium truncate max-w-[120px] ${theme.text}`} title={
+                              res.isUnavailable ? res.userName
+                              : res.isVisitor ? `${res.userName} (${res.purpose})`
+                              : res.isEvent ? `${res.eventName} (${res.userName})`
+                              : `${res.userName} ${res.targetClass !== '선택 안함' ? `(${res.targetClass})` : ''}`
+                            }>
+                              {res.isUnavailable ? res.userName 
+                              : res.isVisitor ? <>{res.userName} <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.purpose})</span></>
+                              : res.isEvent ? <>{res.eventName} <span className="ml-1 text-slate-500 text-[11px] font-normal">
+                                  ({res.userName}{res.isEventStaff && !res.isEventStudent ? ' · 교직원' : ''}{res.isEventStaff && res.isEventStudent ? ' · 교직원' : ''}{res.isEventStudent && res.targetGrades?.length ? ` · ${formatGrades(res.targetGrades, res.targetGradesEtc)}` : ''})
+                                </span></>
+                              : <>{res.userName} {res.targetClass !== '선택 안함' && <span className="ml-1 text-slate-500 text-[11px] font-normal">({res.targetClass})</span>}</>}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              {canDelete(res) && (
+                                <button onClick={(e) => { e.stopPropagation(); handleDelete(res); }} aria-label="삭제" className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={14} /></button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      });
                     })}
                   </tbody>
                 </table>
