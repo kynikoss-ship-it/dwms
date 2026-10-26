@@ -37,6 +37,8 @@ const MULTI_BOOKING_RESOURCES = [EVENT_RESOURCE, VISITOR_RESOURCE];
 
 const EVENT_GRADES = ['1', '2', '3', '기타'];
 const TIME_SLOTS = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시', '방과후'];
+// 행사는 등교시간(1교시 이전)·점심시간(4교시와 5교시 사이)에도 진행될 수 있으므로 별도 슬롯 사용
+const EVENT_TIME_SLOTS = ['등교시간', '1교시', '2교시', '3교시', '4교시', '점심시간', '5교시', '6교시', '7교시', '방과후'];
 const VISITOR_TIME_SLOTS = [
   '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
   '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00',
@@ -64,6 +66,12 @@ const getLocalDateString = (d = new Date()) => {
 };
 
 const isMultiBookingResource = (res) => MULTI_BOOKING_RESOURCES.includes(res);
+
+// 분류별 시간 슬롯 목록 (방문자: 시각, 행사: 등교/점심 포함 교시, 그 외: 일반 교시)
+const getSlotsForResource = (res) =>
+  res === VISITOR_RESOURCE ? VISITOR_TIME_SLOTS
+  : res === EVENT_RESOURCE ? EVENT_TIME_SLOTS
+  : TIME_SLOTS;
 
 // 도서관/미래교실: 기존과 동일한 고정 슬롯 ID (시간당 1건, 기존 데이터와 완전히 동일한 패턴)
 const makeSlotId = (date, resource, time) =>
@@ -160,7 +168,7 @@ export default function App() {
 
   const isEvent = resource === EVENT_RESOURCE;
   const isVisitor = resource === VISITOR_RESOURCE;
-  const currentSlots = isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
+  const currentSlots = getSlotsForResource(resource);
   const isTabVisitor = activeTab === VISITOR_RESOURCE;
   const allowsMultiBooking = isMultiBookingResource(resource);
 
@@ -195,8 +203,8 @@ export default function App() {
       const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       data.sort((a, b) => {
         if (a.date === b.date) {
-            const aSlots = a.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
-            const bSlots = b.isVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS;
+            const aSlots = getSlotsForResource(a.resource);
+            const bSlots = getSlotsForResource(b.resource);
             const slotDiff = Math.max(0, aSlots.indexOf(a.time)) - Math.max(0, bSlots.indexOf(b.time));
             if (slotDiff !== 0) return slotDiff;
             // 같은 시간대 내에서는 등록 순서(생성 시각)대로 정렬
@@ -265,7 +273,7 @@ export default function App() {
       return;
     }
     
-    if (!isAllDay && times.length === 0) { setMessage({ type: 'error', text: isVisitor ? '시간을 선택하세요.' : '교시를 선택하세요.' }); return; }
+    if (!isAllDay && times.length === 0) { setMessage({ type: 'error', text: isVisitor ? '시간을 선택하세요.' : isEvent ? '시간대를 선택하세요.' : '교시를 선택하세요.' }); return; }
     
     if (isVisitor && !isUnavailable) {
         if (!visitorName.trim()) { setMessage({ type: 'error', text: '방문자 이름을 입력하세요.' }); return; }
@@ -491,8 +499,8 @@ export default function App() {
 
                 {!isAllDay && (
                   <div>
-                    <label className="text-sm font-bold text-slate-600 block mb-2">{isVisitor ? '시간' : '교시'} <span className="font-normal text-slate-400">(다중 선택 가능)</span></label>
-                    <div className={isVisitor ? "grid grid-cols-5 gap-2" : "grid grid-cols-4 gap-2"}>
+                    <label className="text-sm font-bold text-slate-600 block mb-2">{isVisitor ? '시간' : isEvent ? '시간대' : '교시'} <span className="font-normal text-slate-400">(다중 선택 가능)</span></label>
+                    <div className={(isVisitor || isEvent) ? "grid grid-cols-5 gap-2" : "grid grid-cols-4 gap-2"}>
                       {currentSlots.map(slot => (
                         <button key={slot} type="button" disabled={bookedTimeSlots.includes(slot)} onClick={() => toggleTime(slot)}
                           className={`py-1.5 px-1 text-xs rounded-lg border font-bold transition-colors ${bookedTimeSlots.includes(slot) ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : times.includes(slot) ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'}`}>
@@ -641,14 +649,14 @@ export default function App() {
                 <table className="w-full text-sm text-left whitespace-nowrap">
                   <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                     <tr>
-                      <th className="px-3 py-2 text-center w-16">{isTabVisitor ? '시간' : '교시'}</th>
+                      <th className="px-3 py-2 text-center w-16">{isTabVisitor ? '시간' : activeTab === EVENT_RESOURCE ? '시간대' : '교시'}</th>
                       <th className="px-3 py-2 text-center w-16">상태</th>
                       <th className="px-3 py-2">{isTabVisitor ? '방문자(목적)' : '예약자(사유)'}</th>
                       <th className="px-3 py-2 text-center w-10">관리</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(isTabVisitor ? VISITOR_TIME_SLOTS : TIME_SLOTS).map(slot => {
+                    {getSlotsForResource(activeTab).map(slot => {
                       const slotResList = dailyReservationsBySlot[slot];
                       if (!slotResList || slotResList.length === 0) {
                         return (
@@ -795,7 +803,7 @@ export default function App() {
             <dl className="space-y-3 text-sm">
               <DetailRow label="날짜" value={detailRes.date} />
               <DetailRow label="분류" value={detailRes.resource} />
-              <DetailRow label={detailRes.isVisitor ? '시간' : '교시'} value={detailRes.time} />
+              <DetailRow label={detailRes.isVisitor ? '시간' : detailRes.isEvent ? '시간대' : '교시'} value={detailRes.time} />
               {detailRes.isUnavailable ? (
                 <DetailRow label="사유" value={detailRes.userName} />
               ) : detailRes.isVisitor ? (
